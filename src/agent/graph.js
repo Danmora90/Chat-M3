@@ -55,13 +55,60 @@ export async function createAgent() {
          */
         async function callModel(state) {
             try {
-                // --- CORRECCIÓN ARQUITECTÓNICA ---
-                // Eliminamos cualquier manipulación manual del historial.
-                // LangGraph gestiona state.messages y la persistencia (checkpoints).
-                // Solo inyectamos el system prompt al vuelo (sin persistirlo).
+                // --- INYECCIÓN DE CONTEXTO TEMPORAL EN TIEMPO REAL Y TABLA DETERMINISTA ---
+                const now = new Date();
+                const bogotaDateStr = now.toLocaleDateString("en-US", { timeZone: "America/Bogota" });
+                const baseDate = new Date(bogotaDateStr);
+
+                const days = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+                const months = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+
+                const fechaActualFormatted = now.toLocaleString("es-CO", {
+                    timeZone: "America/Bogota",
+                    weekday: "long",
+                    year: "numeric",
+                    month: "long",
+                    day: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    hour12: true
+                });
+                const isoActual = now.toISOString();
+
+                // Construir tabla determinista de los próximos 14 días a partir de hoy (en hora de Colombia)
+                let calendarTable = "CALENDARIO DETERMINISTA DE REFERENCIA (ZONA HORARIA COLOMBIA GMT-5):\n";
+                for (let i = 0; i < 14; i++) {
+                    const d = new Date(baseDate.getTime() + i * 24 * 3600 * 1000);
+                    const year = d.getFullYear();
+                    const monthName = months[d.getMonth()];
+                    const monthNum = String(d.getMonth() + 1).padStart(2, '0');
+                    const dayNum = String(d.getDate()).padStart(2, '0');
+                    const dayName = days[d.getDay()];
+                    
+                    let label = "";
+                    if (i === 0) label = " (HOY)";
+                    else if (i === 1) label = " (MAÑANA)";
+                    else if (i <= 7) label = " (ESTA SEMANA)";
+                    else label = " (PRÓXIMA SEMANA)";
+
+                    calendarTable += `- ${dayName.toUpperCase()} ${dayNum} de ${monthName} de ${year}${label} -> ISO Fecha: ${year}-${monthNum}-${dayNum}\n`;
+                }
+
+                const dynamicSystemPrompt = `${systemPrompt}
+
+--------------------------------------------------
+📌 REGLA SUPREMA TEMPORAL Y MANEJO DE MEMORIA (OBLIGATORIO):
+1. FECHA Y HORA ACTUAL REAL EN COLOMBIA: ${fechaActualFormatted} (${isoActual}).
+2. IGNORA COMPLETAMENTE cualquier año antiguo (como 2023 o 2024) o fecha equivocada que aparezca en el historial previo de mensajes de la memoria. NUNCA te bases en fechas de mensajes pasados.
+3. Consulta la siguiente TABLA DETERMINISTA para saber la fecha ISO exactísima correspondiente a cualquier día mencionado por el usuario:
+
+${calendarTable}
+
+4. INSTRUCCIÓN PARA AGENDAR: Cuando el usuario diga "el martes", "mañana", "el próximo miércoles", busca el día exacto en la tabla determinista anterior y genera el parámetro fecha_hora_iso con el año ${now.getFullYear()} y la hora acordada (ejemplo: "${now.getFullYear()}-07-28T09:00:00-05:00").
+--------------------------------------------------`;
 
                 const messages = [
-                    { role: "system", content: systemPrompt },
+                    { role: "system", content: dynamicSystemPrompt },
                     ...state.messages
                 ];
 

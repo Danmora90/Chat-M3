@@ -1,44 +1,41 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 
-const COSTO_POR_M2 = 1000000; // 1 millón COP por metro cuadrado
+const BASE_M2 = 1000000; // Cálculo interno base por metro cuadrado (no mencionar al cliente)
+const MARGEN_MIN = 8000000;  // 8 millones COP
+const MARGEN_MAX = 16000000; // 16 millones COP
 
 export const projectQuoterTool = tool(
     async ({ metros_cuadrados, presupuesto_disponible }, config) => {
         try {
             const m2 = Number(metros_cuadrados);
-            const presupuesto = Number(presupuesto_disponible);
 
             if (isNaN(m2) || m2 <= 0) {
                 return "Error: Por favor, proporciona un área en metros cuadrados válida y mayor a cero.";
             }
 
-            if (isNaN(presupuesto) || presupuesto <= 0) {
-                return "Error: Por favor, proporciona un presupuesto válido en pesos (COP).";
-            }
+            const baseCost = m2 * BASE_M2;
+            const rangoMin = baseCost + MARGEN_MIN;
+            const rangoMax = baseCost + MARGEN_MAX;
 
-            const costoTotalEstimado = m2 * COSTO_POR_M2;
             let respuesta = `📊 **Resultados de la Cotización Estimada:**\n`;
-            respuesta += `- Área requerida: ${m2} m²\n`;
-            respuesta += `- Presupuesto del cliente: $${presupuesto.toLocaleString('es-CO')}\n`;
-            respuesta += `- Costo Total Estimado: $${costoTotalEstimado.toLocaleString('es-CO')}\n\n`;
+            respuesta += `- Área a remodelar: ${m2} m²\n`;
+            respuesta += `- Rango estimado de remodelación integral: $${rangoMin.toLocaleString('es-CO')} a $${rangoMax.toLocaleString('es-CO')} COP\n\n`;
 
-            // Aquí idealmente deberíamos retornar esto al LLM y actualizar el estado
-            // LangGraph puede inyectar esto en el prompt. El reducer del estado puede ser llamado
-            // desde un Command si estamos en LangGraph v0.2+, pero como tool simple devolvemos el texto
-            // para que Mas3 se lo comunique al cliente.
+            if (presupuesto_disponible && !isNaN(Number(presupuesto_disponible)) && Number(presupuesto_disponible) > 0) {
+                const presupuesto = Number(presupuesto_disponible);
+                respuesta += `- Presupuesto proporcionado por el cliente: $${presupuesto.toLocaleString('es-CO')} COP\n`;
 
-            if (presupuesto >= costoTotalEstimado) {
-                respuesta += `✅ **Viabilidad:** El presupuesto es **Suficiente**. La obra es completamente realizable con el dinero disponible. Puedes invitar al cliente a agendar una visita técnica o realizar el pago del anticipo de obra.`;
-            } else {
-                const areaViable = Math.floor(presupuesto / COSTO_POR_M2);
-                respuesta += `⚠️ **Viabilidad:** El presupuesto es **Insuficiente** para los ${m2} m² solicitados.\n`;
-                
-                if (areaViable > 0) {
-                    respuesta += `💡 **Alternativa Sugerida:** Con el presupuesto actual, el cliente podría remodelar un área de **${areaViable} m²**. Sugiérele iniciar el proyecto por fases (ej: primero baños o cocina).`;
+                if (presupuesto >= rangoMin) {
+                    respuesta += `✅ **Viabilidad:** El presupuesto del cliente está dentro o por encima del rango estimado. Invítalo a agendar una videollamada para definir materiales y acabados exactos.`;
                 } else {
-                    respuesta += `🛑 **Importante:** El presupuesto no alcanza ni para el área mínima de 1 m². Informa amablemente al cliente sobre nuestras tarifas de $1,000,000 COP por metro cuadrado.`;
+                    respuesta += `⚠️ **Viabilidad:** El presupuesto está por debajo del rango estimado completo. Sugiérele revisar el alcance del proyecto o agendar una cita para ver alternativas según su presupuesto.`;
                 }
+            } else {
+                respuesta += `💡 **Instrucción para el Agente Felipe:**\n`;
+                respuesta += `1. Si el cliente aún NO ha mencionado su presupuesto, pregúntale primero cuál es el presupuesto que tiene destinado.\n`;
+                respuesta += `2. Si el cliente no desea dar su presupuesto o pide el estimado de una vez, comunícale que el costo estimado para la remodelación integral de su espacio de ${m2} m² está entre **$${rangoMin.toLocaleString('es-CO')} y $${rangoMax.toLocaleString('es-CO')} COP**.\n`;
+                respuesta += `3. Explícale que la variación entre esos valores depende exclusivamente de los materiales y acabados que se escojan en una reunión virtual o visita técnica. NUNCA menciones tarifas fijas por metro cuadrado.`;
             }
 
             return respuesta;
@@ -48,10 +45,11 @@ export const projectQuoterTool = tool(
     },
     {
         name: "project_quotation_calculator",
-        description: "Úsala cuando el cliente proporciona los metros cuadrados (m²) a remodelar y su presupuesto disponible. Calcula si el presupuesto es viable o cuántos metros se pueden hacer con su dinero.",
+        description: "Úsala para calcular el rango de inversión estimado para remodelación integral según los metros cuadrados del inmueble. El presupuesto del cliente es opcional.",
         schema: z.object({
             metros_cuadrados: z.number().describe("Cantidad de metros cuadrados (m²) que el cliente desea remodelar."),
-            presupuesto_disponible: z.number().describe("Presupuesto en pesos (COP) del que dispone el cliente.")
+            presupuesto_disponible: z.number().optional().describe("Presupuesto opcional en pesos (COP) del que dispone el cliente si lo proporcionó.")
         })
     }
 );
+

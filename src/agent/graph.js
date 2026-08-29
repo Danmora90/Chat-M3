@@ -10,6 +10,7 @@ import { projectQuoterTool } from "../tools/projectQuoter.js";
 import { processPaymentTool as registerSaleTool } from "../tools/paymentTools.js"; // Renamed import
 import { updateChatTagTool } from "../tools/chatTaggingTool.js";
 import { agendarReunionTool } from "../tools/calendarTool.js";
+import { crmSyncTool } from "../tools/crmSyncTool.js";
 import { PostgresSaver } from "../checkpoints/postgresSaver.js";
 import { createOpenAIModel } from "../services/openai.js";
 import { logger } from "../middleware/logger.js";
@@ -46,7 +47,8 @@ export async function createAgent() {
             projectQuoterTool,
             registerSaleTool,
             updateChatTagTool,
-            agendarReunionTool
+            agendarReunionTool,
+            crmSyncTool
         ];
         const model = createOpenAIModel().bindTools(tools);
 

@@ -116,7 +116,27 @@ export async function getOrCreateChat(userId, storeId = null) {
             .limit(1)
             .maybeSingle();
 
-        if (existing) return existing;
+        if (existing) {
+            // Asegurar que el chat tenga registro en la tabla projects para el CRM
+            try {
+                const { data: proj } = await supabaseAdmin
+                    .from('projects')
+                    .select('id')
+                    .eq('chat_id', existing.id)
+                    .maybeSingle();
+
+                if (!proj) {
+                    await supabaseAdmin.from('projects').insert({
+                        chat_id: existing.id,
+                        estatus_embudo: existing.funnel_stage || '4 - Escribió',
+                        updated_at: new Date().toISOString()
+                    });
+                }
+            } catch (pErr) {
+                console.error('Error auto-syncing project for existing chat:', pErr);
+            }
+            return existing;
+        }
 
         // Crear nuevo chat
         const chatData = { user_id: userId };
@@ -129,6 +149,18 @@ export async function getOrCreateChat(userId, storeId = null) {
             .single();
 
         if (createError) throw createError;
+
+        // Crear registro inicial del proyecto en la tabla projects para el CRM
+        try {
+            await supabaseAdmin.from('projects').insert({
+                chat_id: newChat.id,
+                estatus_embudo: '4 - Escribió',
+                updated_at: new Date().toISOString()
+            });
+        } catch (pErr) {
+            console.error('Error auto-creating project for new chat:', pErr);
+        }
+
         return newChat;
     } catch (error) {
         console.error('Error in getOrCreateChat:', error);

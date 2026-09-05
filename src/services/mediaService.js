@@ -1,9 +1,10 @@
 import axios from 'axios';
-import { uploadFile, getSignedUrl as getFirebaseSignedUrl } from './firebase.js';
+import { supabaseAdmin } from './supabase.js';
 
 /**
  * Procesa los archivos multimedia entrantes de Twilio.
- * Descarga de Twilio -> Sube a Firebase -> Genera URL firmada
+ * Descarga de Twilio -> Sube a Supabase Storage (bucket 'chat-media') -> Genera URL Pública
+ * Fallback a Proxy de Twilio si ocurriera cualquier inconveniente.
  * 
  * @param {string} chatId - ID del chat en Supabase
  * @param {string} messageSid - SID del mensaje de Twilio (para unicidad)
@@ -24,7 +25,6 @@ export async function processInboundMedia(chatId, messageSid, mediaItems) {
         
         try {
             // 1. Descargar de Twilio
-            // Twilio puede redirigir, axios sigue redirecciones por defecto
             const response = await axios.get(mediaUrl, {
                 responseType: 'arraybuffer',
                 auth: twilioAuth
@@ -33,35 +33,55 @@ export async function processInboundMedia(chatId, messageSid, mediaItems) {
             // 2. Determinar extensión y tipo
             const ext = getExtensionFromMime(contentType);
             const type = getTypeFromMime(contentType);
+            const isSticker = contentType === 'image/webp';
             
-            // 3. Definir ruta en Firebase: chats/{chat_id}/messages/{message_sid}/{i}.{ext}
+            // 3. Definir ruta en Supabase Storage: chats/{chat_id}/messages/{message_sid}/{i}.{ext}
             const storagePath = `chats/${chatId}/messages/${messageSid}/${i}.${ext}`;
             
-            // 4. Subir a Firebase
-            await uploadFile(response.data, storagePath, contentType);
+            // 4. Subir a Supabase Storage bucket 'chat-media'
+            const { error: uploadError } = await supabaseAdmin.storage
+                .from('chat-media')
+                .upload(storagePath, response.data, {
+                    contentType: contentType || 'application/octet-stream',
+                    upsert: true
+                });
 
-            // 5. Generar URL firmada inicial (para guardar en BD y que el front la tenga rápido)
-            // Se puede configurar expiración larga (ej. 7 días)
-            const { signedUrl, expiresAt } = await getFirebaseSignedUrl(storagePath, 7);
+            if (uploadError) {
+                console.warn(`[Supabase Storage Warning] Error subiendo ${storagePath}:`, uploadError.message);
+                throw uploadError;
+            }
+
+            // 5. Obtener URL Pública de Supabase
+            const { data: publicUrlData } = supabaseAdmin.storage
+                .from('chat-media')
+                .getPublicUrl(storagePath);
+
+            const fileUrl = publicUrlData?.publicUrl || `/api/media/proxy?url=${encodeURIComponent(mediaUrl)}`;
 
             attachments.push({
                 type,
                 mime: contentType,
-                url: signedUrl, // URL lista para usar
-                original_url: mediaUrl, // URL original de Twilio (backup)
-                storage_provider: 'firebase',
+                url: fileUrl,
+                original_url: mediaUrl,
+                storage_provider: 'supabase',
                 storage_path: storagePath,
-                expires_at: expiresAt
+                is_sticker: isSticker
             });
 
         } catch (error) {
-            console.error(`Error processing media ${i} (${mediaUrl}):`, error);
-            // Agregamos con error para no perder referencia de que había algo
+            console.error(`Error processing media ${i} (${mediaUrl}):`, error?.message || error);
+            
+            // Fallback a Proxy Autenticado de Twilio si falla la subida a almacenamiento
+            const proxyUrl = `/api/media/proxy?url=${encodeURIComponent(mediaUrl)}`;
+            const type = getTypeFromMime(contentType);
+            
             attachments.push({
-                type: 'unknown',
+                type,
                 mime: contentType,
+                url: proxyUrl,
                 original_url: mediaUrl,
-                error: error.message
+                storage_provider: 'proxy',
+                is_sticker: contentType === 'image/webp'
             });
         }
     }
@@ -72,7 +92,12 @@ export async function processInboundMedia(chatId, messageSid, mediaItems) {
 function getExtensionFromMime(mimeType) {
     if (!mimeType) return 'bin';
     const parts = mimeType.split('/');
-    if (parts.length === 2) return parts[1];
+    if (parts.length === 2) {
+        // Manejar sub-tipos conocidos
+        const sub = parts[1].split(';')[0];
+        if (sub === 'jpeg') return 'jpg';
+        return sub;
+    }
     return 'bin';
 }
 

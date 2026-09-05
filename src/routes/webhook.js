@@ -203,14 +203,30 @@ router.post('/whatsapp', twilioWebhookValidator, catchAsync(async (req, res) => 
         }
 
         // 3. Guardar mensaje del usuario en la base de datos
-        // Guardamos el Body (texto) como contenido principal.
-        // Si no hay texto pero hay media, guardamos un marcador o el Body vacío.
         const hasAttachments = messageMetadata.attachments && messageMetadata.attachments.length > 0;
+        let savedContent = Body || '';
+        if (!savedContent && hasAttachments) {
+            const firstAtt = messageMetadata.attachments[0];
+            if (firstAtt.is_sticker || firstAtt.mime === 'image/webp') {
+                savedContent = '[Sticker]';
+            } else if (firstAtt.type === 'image') {
+                savedContent = '[Foto]';
+            } else if (firstAtt.type === 'audio') {
+                savedContent = '[Nota de voz]';
+            } else if (firstAtt.type === 'video') {
+                savedContent = '[Video]';
+            } else {
+                savedContent = '[Archivo]';
+            }
+        } else if (!savedContent) {
+            savedContent = '[Mensaje vacío]';
+        }
+
         await saveMessage(
             chat.id,
             user.id,
             'user',
-            Body || (hasAttachments ? '' : '[Mensaje vacío]'),
+            savedContent,
             messageMetadata,
             MessageSid || null
         );

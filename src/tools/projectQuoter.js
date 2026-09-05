@@ -34,6 +34,8 @@ export const projectQuoterTool = tool(
                     .eq('chat_id', chatId)
                     .maybeSingle();
 
+                const targetStage = !isViable ? '1 - No tiene presupuesto' : '6 - Lead';
+
                 const projectPayload = {
                     chat_id: chatId,
                     total_area_m2: m2,
@@ -42,7 +44,7 @@ export const projectQuoterTool = tool(
                     area_viable_m2: areaViable,
                     valor_cotizado_min: rangoMin,
                     valor_cotizado_max: rangoMax,
-                    estatus_embudo: '5 - Cotizado',
+                    estatus_embudo: targetStage,
                     updated_at: new Date().toISOString()
                 };
 
@@ -56,7 +58,7 @@ export const projectQuoterTool = tool(
                 await supabaseAdmin
                     .from('chats')
                     .update({
-                        funnel_stage: '5 - Cotizado',
+                        funnel_stage: targetStage,
                         updated_at: new Date().toISOString()
                     })
                     .eq('id', chatId);

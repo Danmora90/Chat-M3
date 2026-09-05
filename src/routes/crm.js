@@ -7,6 +7,32 @@ const router = Router();
 // 1. Obtener datos estructurados para el Tablero Kanban
 router.get("/kanban", async (req, res) => {
     try {
+        // Definir etapas válidas oficiales
+        const VALID_STAGES = new Set([
+            '1 - No tiene presupuesto',
+            '2 - Credito negado',
+            '3 - Le entregan lejos',
+            '4 - Escribió',
+            '5 - Pidio info',
+            '6 - Lead',
+            '7 - No asistio',
+            '8 - Agendado',
+            '9 - Cotizado',
+            '10 - Cliente',
+            '11 - Perdido',
+            '12 - No agendo'
+        ]);
+
+        const LEGACY_STAGE_MAP = {
+            '5 - Cotizado': '6 - Lead',
+            '1 - Contactado': '4 - Escribió',
+            '2 - Interesado': '6 - Lead',
+            '3 - Cita Agendada': '8 - Agendado',
+            '4 - Cotizado': '9 - Cotizado',
+            '6 - En Negociación': '9 - Cotizado',
+            '7 - Ganado': '10 - Cliente'
+        };
+
         // Auto-sincronizar chats que no tengan aún su correspondiente registro en projects
         const { data: allChats } = await supabaseAdmin.from("chats").select("id, funnel_stage");
         if (allChats && allChats.length > 0) {
@@ -15,12 +41,31 @@ router.get("/kanban", async (req, res) => {
             const missingChats = allChats.filter(c => !existingChatIds.has(c.id));
 
             if (missingChats.length > 0) {
-                const newProjectsPayload = missingChats.map(c => ({
-                    chat_id: c.id,
-                    estatus_embudo: c.funnel_stage || '4 - Escribió',
-                    updated_at: new Date().toISOString()
-                }));
+                const newProjectsPayload = missingChats.map(c => {
+                    const validStage = VALID_STAGES.has(c.funnel_stage)
+                        ? c.funnel_stage
+                        : (LEGACY_STAGE_MAP[c.funnel_stage] || '4 - Escribió');
+                    return {
+                        chat_id: c.id,
+                        estatus_embudo: validStage,
+                        updated_at: new Date().toISOString()
+                    };
+                });
                 await supabaseAdmin.from("projects").insert(newProjectsPayload);
+            }
+        }
+
+        // Corregir de inmediato registros en 'projects' que tengan estados no válidos
+        const { data: allProjectsCheck } = await supabaseAdmin.from("projects").select("id, chat_id, estatus_embudo");
+        if (allProjectsCheck) {
+            for (const p of allProjectsCheck) {
+                if (p.estatus_embudo && !VALID_STAGES.has(p.estatus_embudo)) {
+                    const fixedStage = LEGACY_STAGE_MAP[p.estatus_embudo] || '6 - Lead';
+                    await supabaseAdmin.from("projects").update({ estatus_embudo: fixedStage, updated_at: new Date().toISOString() }).eq("id", p.id);
+                    if (p.chat_id) {
+                        await supabaseAdmin.from("chats").update({ funnel_stage: fixedStage, updated_at: new Date().toISOString() }).eq("id", p.chat_id);
+                    }
+                }
             }
         }
         const { data: projects, error } = await supabaseAdmin

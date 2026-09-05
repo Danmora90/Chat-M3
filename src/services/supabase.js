@@ -295,32 +295,48 @@ export async function getChatHistory(chatId, limit = 50, before = null) {
                 for (const att of msg.metadata.attachments) {
                     const storagePath = att?.storage_path;
                     const originalUrl = att?.original_url;
-                    const contentType = att?.content_type;
+                    const contentType = att?.content_type || att?.mime;
+
+                    if (att.url) {
+                        pushAttachment({
+                            url: att.url,
+                            contentType,
+                            source: 'direct',
+                            storagePath,
+                            originalUrl
+                        });
+                        continue;
+                    }
 
                     if (storagePath) {
                         try {
                             let signedUrl;
-                            if (att.storage_provider === 'firebase') {
+                            if (att.storage_provider === 'supabase') {
+                                const { data: pData } = supabaseAdmin.storage.from('chat-media').getPublicUrl(storagePath);
+                                signedUrl = pData?.publicUrl;
+                            } else if (att.storage_provider === 'firebase') {
                                 const result = await getFirebaseSignedUrl(storagePath, 7);
-                                signedUrl = result.signedUrl;
+                                signedUrl = result?.signedUrl;
                             } else {
                                 signedUrl = await getSignedUrl(storagePath, signedUrlExpiresIn);
                             }
 
-                            pushAttachment({
-                                url: signedUrl,
-                                contentType,
-                                source: 'signed',
-                                storagePath,
-                                originalUrl
-                            });
-                            continue;
+                            if (signedUrl) {
+                                pushAttachment({
+                                    url: signedUrl,
+                                    contentType,
+                                    source: 'signed',
+                                    storagePath,
+                                    originalUrl
+                                });
+                                continue;
+                            }
                         } catch (signedError) {
-                            console.error('Error generating signed URL:', signedError);
+                            console.error('Error generating URL:', signedError);
                         }
                     }
 
-                    // Fallback: proxy autenticado (Twilio media requiere Basic Auth en browser)
+                    // Fallback: proxy autenticado
                     if (originalUrl) {
                         pushAttachment({
                             url: buildProxyUrl(originalUrl),

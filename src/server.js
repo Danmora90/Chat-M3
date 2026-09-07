@@ -7,6 +7,7 @@ import cors from 'cors';
 import webhookRoutes from './routes/webhook.js';
 import apiRoutes from './routes/api.js';
 import crmRoutes from './routes/crm.js';
+import adminRoutes from './routes/admin.js';
 import authRoutes from './routes/auth.js';
 import metricsRoutes from './routes/metrics.js';
 import { createRateLimiter } from './middleware/rateLimiter.js';
@@ -52,6 +53,8 @@ app.use(createRateLimiter());
 // Routes
 app.use('/m3', webhookRoutes);
 app.use('/api/crm', crmRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/admin', adminRoutes);
 app.use('/api', apiRoutes);
 app.use('/api/metrics', metricsRoutes);
 app.use('/auth', authRoutes);

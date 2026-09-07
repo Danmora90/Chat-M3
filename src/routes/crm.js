@@ -1,8 +1,12 @@
 import { Router } from "express";
 import { supabaseAdmin } from "../services/supabase.js";
 import { logger } from "../middleware/logger.js";
+import { authMiddleware } from "../middleware/authMiddleware.js";
 
 const router = Router();
+
+// Proteger todas las rutas del CRM comercial: requiere usuario autenticado y activo
+router.use(authMiddleware);
 
 // 1. Obtener datos estructurados para el Tablero Kanban
 router.get("/kanban", async (req, res) => {

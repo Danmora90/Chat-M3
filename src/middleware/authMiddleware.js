@@ -1,4 +1,4 @@
-import { supabase } from '../services/supabase.js';
+import { supabase, supabaseAdmin } from '../services/supabase.js';
 
 export const authMiddleware = async (req, res, next) => {
   try {
@@ -10,28 +10,58 @@ export const authMiddleware = async (req, res, next) => {
 
     const token = authHeader.split(' ')[1];
 
-    // Validación nativa de Supabase (Infalible)
+    // Validación nativa de Supabase Auth
     const { data: { user }, error } = await supabase.auth.getUser(token);
 
     if (error || !user) {
-      console.error('Error de Supabase Auth:', error.message);
+      console.error('Error de Supabase Auth:', error?.message);
       return res.status(401).json({ error: 'Token rechazado por Supabase' });
     }
 
-    req.user = user;
+    // Obtener rol del perfil de operador en public.profiles
+    let userRole = 'USER';
+    let fullName = user.user_metadata?.full_name || '';
+
+    try {
+      const { data: profile } = await supabaseAdmin
+        .from('profiles')
+        .select('role, full_name')
+        .eq('id', user.id)
+        .maybeSingle();
+
+      if (profile?.role) {
+        userRole = profile.role.toUpperCase();
+      } else if (user.user_metadata?.role) {
+        userRole = user.user_metadata.role.toUpperCase();
+      }
+      if (profile?.full_name) {
+        fullName = profile.full_name;
+      }
+    } catch (profileErr) {
+      console.warn('[authMiddleware] Warning fetching profile:', profileErr.message);
+    }
+
+    // Garantizar que el correo administrador principal siempre tenga rol ADMIN
+    if (user.email === 'danielmoyemanizales@gmail.com') {
+      userRole = 'ADMIN';
+    }
+
+    req.user = {
+      ...user,
+      role: userRole,
+      full_name: fullName
+    };
+
     next();
   } catch (err) {
-    console.error('Error catastrófico en middleware:', err);
+    console.error('Error en authMiddleware:', err);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
 
 /**
- * Middleware opcional para verificar roles específicos
+ * Middleware para verificar roles específicos (case-insensitive)
  * Debe usarse DESPUÉS de authMiddleware
- * 
- * @param {Array<string>} allowedRoles - Roles permitidos
- * @returns {Function} Middleware de Express
  */
 export function requireRole(...allowedRoles) {
     return (req, res, next) => {
@@ -42,18 +72,20 @@ export function requireRole(...allowedRoles) {
             });
         }
 
-        const userRole = req.user.role || 'user';
+        const userRole = (req.user.role || 'USER').toUpperCase();
+        const upperAllowed = allowedRoles.map(r => String(r).toUpperCase());
 
-        if (!allowedRoles.includes(userRole)) {
+        if (!upperAllowed.includes(userRole)) {
             console.warn('Insufficient permissions', {
                 userId: req.user.id,
+                email: req.user.email,
                 userRole,
-                requiredRoles: allowedRoles,
+                requiredRoles: upperAllowed,
                 path: req.path
             });
             return res.status(403).json({
                 error: 'Forbidden',
-                message: 'No tienes permisos para acceder a este recurso'
+                message: 'No tienes permisos de Administrador para realizar esta acción'
             });
         }
 

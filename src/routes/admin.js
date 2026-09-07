@@ -1,0 +1,191 @@
+import express from 'express';
+import { supabaseAdmin } from '../services/supabase.js';
+import { authMiddleware, requireRole } from '../middleware/authMiddleware.js';
+import { logger } from '../middleware/logger.js';
+import { catchAsync } from '../utils/errors.js';
+
+const router = express.Router();
+
+// Todas las rutas de administración requieren autenticación y rol ADMIN
+router.use(authMiddleware);
+router.use(requireRole('ADMIN'));
+
+/**
+ * GET /api/admin/users
+ * Lista todos los operadores y miembros del equipo desde public.profiles
+ */
+router.get('/users', catchAsync(async (req, res) => {
+    logger.info('Admin: List users requested', { adminId: req.user.id, adminEmail: req.user.email });
+
+    // Asegurar que el administrador principal exista en la tabla profiles
+    if (req.user.email === 'danielmoyemanizales@gmail.com') {
+        await supabaseAdmin.from('profiles').upsert({
+            id: req.user.id,
+            email: req.user.email,
+            full_name: req.user.full_name || 'Daniel Mora',
+            role: 'ADMIN',
+            updated_at: new Date().toISOString()
+        });
+    }
+
+    const { data: profiles, error } = await supabaseAdmin
+        .from('profiles')
+        .select('id, email, full_name, role, avatar_url, created_at, updated_at')
+        .order('created_at', { ascending: false });
+
+    if (error) {
+        logger.error('Admin: Error fetching profiles', error);
+        throw error;
+    }
+
+    // Normalizar formato para el frontend
+    const users = (profiles || []).map(p => ({
+        id: p.id,
+        email: p.email,
+        full_name: p.full_name || 'Sin Nombre',
+        role: (p.role || 'USER').toUpperCase(),
+        store_id: 'MAS.3 Sede Principal',
+        avatar_url: p.avatar_url,
+        created_at: p.created_at
+    }));
+
+    res.json(users);
+}));
+
+/**
+ * POST /api/admin/users
+ * Registra un nuevo usuario en Supabase Auth y lo sincroniza en public.profiles
+ */
+router.post('/users', catchAsync(async (req, res) => {
+    const { email, password, full_name, role } = req.body;
+
+    if (!email || !password) {
+        return res.status(400).json({ error: 'El correo electrónico y la contraseña son obligatorios' });
+    }
+
+    if (password.length < 6) {
+        return res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres' });
+    }
+
+    const assignedRole = (role || 'AGENT').toUpperCase();
+
+    logger.info('Admin: Creating new system user', {
+        adminId: req.user.id,
+        newEmail: email,
+        assignedRole
+    });
+
+    // 1. Crear usuario en Supabase Auth usando el API Admin
+    const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
+        email: email.trim().toLowerCase(),
+        password: password,
+        email_confirm: true,
+        user_metadata: {
+            full_name: full_name?.trim() || '',
+            role: assignedRole
+        }
+    });
+
+    if (authError) {
+        logger.error('Admin: Error creating auth user', authError);
+        return res.status(400).json({ error: authError.message });
+    }
+
+    const newUserId = authData.user.id;
+
+    // 2. Insertar/Sincronizar en public.profiles
+    const profilePayload = {
+        id: newUserId,
+        email: email.trim().toLowerCase(),
+        full_name: full_name?.trim() || 'Sin Nombre',
+        role: assignedRole,
+        updated_at: new Date().toISOString()
+    };
+
+    const { error: profileError } = await supabaseAdmin
+        .from('profiles')
+        .upsert(profilePayload);
+
+    if (profileError) {
+        logger.warn('Admin: Warning creating profile row, auth created', profileError);
+    }
+
+    res.status(201).json({
+        id: newUserId,
+        email: profilePayload.email,
+        full_name: profilePayload.full_name,
+        role: assignedRole,
+        store_id: 'MAS.3 Sede Principal'
+    });
+}));
+
+/**
+ * PUT /api/admin/users/:id
+ * Actualiza los datos o rol de un usuario existente
+ */
+router.put('/users/:id', catchAsync(async (req, res) => {
+    const { id } = req.params;
+    const { full_name, role, password } = req.body;
+
+    const updates = { updated_at: new Date().toISOString() };
+    if (full_name !== undefined) updates.full_name = full_name.trim();
+    if (role !== undefined) updates.role = role.toUpperCase();
+
+    // Si se envía nueva contraseña, actualizarla en Supabase Auth
+    if (password && password.length >= 6) {
+        await supabaseAdmin.auth.admin.updateUserById(id, {
+            password,
+            user_metadata: {
+                full_name: updates.full_name,
+                role: updates.role
+            }
+        });
+    }
+
+    const { data: updatedProfile, error } = await supabaseAdmin
+        .from('profiles')
+        .update(updates)
+        .eq('id', id)
+        .select()
+        .single();
+
+    if (error) {
+        logger.error('Admin: Error updating profile', error);
+        throw error;
+    }
+
+    res.json({
+        id: updatedProfile.id,
+        email: updatedProfile.email,
+        full_name: updatedProfile.full_name,
+        role: (updatedProfile.role || 'USER').toUpperCase(),
+        store_id: 'MAS.3 Sede Principal'
+    });
+}));
+
+/**
+ * DELETE /api/admin/users/:id
+ * Revoca y elimina un usuario de la plataforma
+ */
+router.delete('/users/:id', catchAsync(async (req, res) => {
+    const { id } = req.params;
+
+    if (req.user.id === id) {
+        return res.status(400).json({ error: 'Por seguridad, no puedes eliminar tu propio usuario administrador' });
+    }
+
+    logger.info('Admin: Deleting user', { adminId: req.user.id, targetUserId: id });
+
+    // 1. Eliminar de Supabase Auth
+    const { error: authError } = await supabaseAdmin.auth.admin.deleteUser(id);
+    if (authError) {
+        logger.error('Admin: Error deleting auth user', authError);
+    }
+
+    // 2. Eliminar de public.profiles
+    await supabaseAdmin.from('profiles').delete().eq('id', id);
+
+    res.json({ success: true, message: 'Usuario eliminado exitosamente' });
+}));
+
+export default router;

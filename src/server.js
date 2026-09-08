@@ -10,6 +10,8 @@ import crmRoutes from './routes/crm.js';
 import adminRoutes from './routes/admin.js';
 import authRoutes from './routes/auth.js';
 import metricsRoutes from './routes/metrics.js';
+import taskRoutes from './routes/tasks.js';
+import notificationRoutes from './routes/notifications.js';
 import { createRateLimiter } from './middleware/rateLimiter.js';
 import { logger, requestLogger } from './middleware/logger.js';
 import { errorHandler } from './utils/errors.js';
@@ -57,6 +59,8 @@ app.use('/api/admin', adminRoutes);
 app.use('/admin', adminRoutes);
 app.use('/api', apiRoutes);
 app.use('/api/metrics', metricsRoutes);
+app.use('/api/tasks', taskRoutes);
+app.use('/api/notifications', notificationRoutes);
 app.use('/auth', authRoutes);
 
 // Health check endpoint

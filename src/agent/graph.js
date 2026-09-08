@@ -1,7 +1,7 @@
 import { StateGraph, END } from "@langchain/langgraph";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { AgentState } from "./state.js";
-import { systemPrompt } from "../prompts/system.js";
+import { getSystemPrompt } from "../services/promptService.js";
 import { materialSearchTool } from "../tools/materialSearch.js";
 import { webSearchTool } from "../tools/webSearch.js";
 import { updateUserDisplayNameTool } from "../tools/userProfile.js";
@@ -96,7 +96,8 @@ export async function createAgent() {
                     calendarTable += `- ${dayName.toUpperCase()} ${dayNum} de ${monthName} de ${year}${label} -> ISO Fecha: ${year}-${monthNum}-${dayNum}\n`;
                 }
 
-                const dynamicSystemPrompt = `${systemPrompt}
+                const activePrompt = await getSystemPrompt();
+                const dynamicSystemPrompt = `${activePrompt}
 
 --------------------------------------------------
 📌 REGLA SUPREMA TEMPORAL Y MANEJO DE MEMORIA (OBLIGATORIO):

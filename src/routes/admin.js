@@ -1,6 +1,7 @@
 import express from 'express';
 import { supabaseAdmin } from '../services/supabase.js';
 import { authMiddleware, requireRole } from '../middleware/authMiddleware.js';
+import { getPromptDetails, saveSystemPrompt, resetSystemPrompt, getPromptHistory } from '../services/promptService.js';
 import { logger } from '../middleware/logger.js';
 import { catchAsync } from '../utils/errors.js';
 
@@ -186,6 +187,53 @@ router.delete('/users/:id', catchAsync(async (req, res) => {
     await supabaseAdmin.from('profiles').delete().eq('id', id);
 
     res.json({ success: true, message: 'Usuario eliminado exitosamente' });
+}));
+
+/**
+ * GET /api/admin/prompt
+ * Obtiene el prompt activo del sistema, si es personalizado y la versión por defecto
+ */
+router.get('/prompt', catchAsync(async (req, res) => {
+    logger.info('Admin: Prompt details requested', { adminId: req.user.id });
+    const details = await getPromptDetails();
+    res.json(details);
+}));
+
+/**
+ * PUT /api/admin/prompt
+ * Actualiza el prompt del sistema en Supabase y en la memoria del agente
+ */
+router.put('/prompt', catchAsync(async (req, res) => {
+    const { prompt } = req.body;
+
+    if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
+        return res.status(400).json({ error: 'El contenido del prompt no puede estar vacío' });
+    }
+
+    logger.info('Admin: Updating system prompt', { adminId: req.user.id, email: req.user.email });
+    const result = await saveSystemPrompt(prompt, req.user.email);
+    res.json(result);
+}));
+
+/**
+ * POST /api/admin/prompt/reset
+ * Restablece el prompt a la versión de fábrica (system.js)
+ */
+router.post('/prompt/reset', catchAsync(async (req, res) => {
+    logger.info('Admin: Resetting prompt to factory default', { adminId: req.user.id });
+    const result = await resetSystemPrompt(req.user.email);
+    res.json(result);
+}));
+
+/**
+ * GET /api/admin/prompt/history
+ * Obtiene las últimas 5 versiones del prompt registradas en el historial
+ */
+router.get('/prompt/history', catchAsync(async (req, res) => {
+    logger.info('Admin: Prompt history requested', { adminId: req.user.id });
+    const limit = parseInt(req.query.limit, 10) || 5;
+    const history = await getPromptHistory(limit);
+    res.json(history);
 }));
 
 export default router;

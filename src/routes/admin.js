@@ -2,6 +2,7 @@ import express from 'express';
 import { supabaseAdmin } from '../services/supabase.js';
 import { authMiddleware, requireRole } from '../middleware/authMiddleware.js';
 import { getPromptDetails, saveSystemPrompt, resetSystemPrompt, getPromptHistory } from '../services/promptService.js';
+import { scanResidentialProjects, getScoutedProjectsHistory, deleteScoutedProject, findProjectByName } from '../services/prospectingService.js';
 import { logger } from '../middleware/logger.js';
 import { catchAsync } from '../utils/errors.js';
 
@@ -234,6 +235,70 @@ router.get('/prompt/history', catchAsync(async (req, res) => {
     const limit = parseInt(req.query.limit, 10) || 5;
     const history = await getPromptHistory(limit);
     res.json(history);
+}));
+
+/**
+ * POST /api/admin/prospecting/scan
+ * Ejecuta el escaneo de proyectos residenciales en Bogotá y Cundinamarca por año y semestre
+ */
+router.post('/prospecting/scan', catchAsync(async (req, res) => {
+    const { city = 'Bogotá', year = '2026', semester = 'all', strata = [4, 5, 6], month } = req.body;
+    logger.info('Admin: Residential prospecting scan requested', {
+        adminId: req.user.id,
+        city,
+        year,
+        semester,
+        strata,
+        month
+    });
+
+    const projects = await scanResidentialProjects({ city, year, semester, strata, month });
+    res.json({
+        success: true,
+        count: projects.length,
+        projects
+    });
+}));
+
+/**
+ * GET /api/admin/prospecting/history
+ * Obtiene la lista de proyectos inmobiliarios descubiertos
+ */
+router.get('/prospecting/history', catchAsync(async (req, res) => {
+    const { city, year, semester, month, search } = req.query;
+    logger.info('Admin: Prospecting history requested', { adminId: req.user.id, city, year, semester, month, search });
+    const projects = await getScoutedProjectsHistory({ city, year, semester, month, search });
+    res.json({
+        success: true,
+        count: projects.length,
+        projects
+    });
+}));
+
+/**
+ * POST /api/admin/prospecting/search-project
+ * Busca o rastrea un proyecto específico por nombre en constructoras oficiales
+ */
+router.post('/prospecting/search-project', catchAsync(async (req, res) => {
+    const { projectName, city = 'Bogotá' } = req.body;
+    logger.info('Admin: Search specific project requested', { adminId: req.user.id, projectName, city });
+    const projects = await findProjectByName({ projectName, city });
+    res.json({
+        success: true,
+        count: projects.length,
+        projects
+    });
+}));
+
+/**
+ * DELETE /api/admin/prospecting/:id
+ * Descarta o elimina un proyecto de la lista de prospección
+ */
+router.delete('/prospecting/:id', catchAsync(async (req, res) => {
+    const { id } = req.params;
+    logger.info('Admin: Deleting scouted project', { adminId: req.user.id, projectId: id });
+    const result = await deleteScoutedProject(id);
+    res.json(result);
 }));
 
 export default router;

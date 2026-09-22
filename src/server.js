@@ -5,6 +5,7 @@ dotenv.config();
 import express from 'express';
 import cors from 'cors';
 import webhookRoutes from './routes/webhook.js';
+import metaWebhookRoutes from './routes/metaWebhook.js';
 import apiRoutes from './routes/api.js';
 import crmRoutes from './routes/crm.js';
 import adminRoutes from './routes/admin.js';
@@ -55,6 +56,7 @@ app.use(createRateLimiter());
 
 // Routes
 app.use('/m3', webhookRoutes);
+app.use('/m3/meta', metaWebhookRoutes);
 app.use('/api/crm', crmRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/admin', adminRoutes);

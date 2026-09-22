@@ -221,9 +221,24 @@ export async function saveMessage(chatId, userId, role, content, metadata = {}, 
 
         if (error) throw error;
 
-        // NOTA: La actualización de last_message_at en la tabla chats ahora se maneja
-        // mediante un trigger en la base de datos (ver database/migration_v6_unread_trigger.sql).
-        // No es necesario hacerlo manualmente aquí.
+        // Actualizar last_message_preview y last_message_at en la tabla chats
+        try {
+            const preview = typeof content === 'string'
+                ? content.substring(0, 150)
+                : '[Mensaje]';
+            const nowIso = new Date().toISOString();
+
+            await supabaseAdmin
+                .from('chats')
+                .update({
+                    last_message_preview: preview,
+                    last_message_at: nowIso,
+                    updated_at: nowIso
+                })
+                .eq('id', chatId);
+        } catch (chatUpdateErr) {
+            console.error('Error updating chat last message info:', chatUpdateErr);
+        }
 
         return data;
     } catch (error) {
@@ -456,3 +471,99 @@ export async function updateUser(userId, updates) {
 }
 
 export const getConversationHistory = getChatHistory;
+
+/**
+ * Obtiene o crea un usuario proveniente de Meta (Instagram o Facebook)
+ * sin requerir teléfono y sin alterar el flujo de WhatsApp
+ */
+export async function getOrCreateMetaUser({ metaId, platform, displayName = null, storeId = null }) {
+    try {
+        const idColumn = platform === 'instagram' ? 'instagram_id' : 'facebook_id';
+
+        let query = supabaseAdmin
+            .from('users')
+            .select('*')
+            .eq(idColumn, metaId);
+
+        if (storeId) {
+            query = query.eq('store_id', storeId);
+        }
+
+        const { data: existing, error: findError } = await query.maybeSingle();
+        if (existing) return existing;
+
+        const userData = {
+            [idColumn]: metaId,
+            display_name: displayName || `${platform.toUpperCase()} User`,
+            metadata: { platform, meta_id: metaId }
+        };
+        if (storeId) userData.store_id = storeId;
+
+        const { data: newUser, error: createError } = await supabaseAdmin
+            .from('users')
+            .insert(userData)
+            .select()
+            .single();
+
+        if (createError) throw createError;
+        return newUser;
+    } catch (error) {
+        console.error(`Error in getOrCreateMetaUser (${platform}):`, error);
+        throw error;
+    }
+}
+
+/**
+ * Obtiene o crea un chat activo para un usuario de Meta (Instagram o Facebook)
+ */
+export async function getOrCreateMetaChat(userId, platform, storeId = null) {
+    try {
+        let query = supabaseAdmin
+            .from('chats')
+            .select('*')
+            .eq('user_id', userId)
+            .eq('channel', platform)
+            .eq('status', 'active');
+
+        if (storeId) {
+            query = query.eq('store_id', storeId);
+        }
+
+        const { data: existing, error: findError } = await query
+            .order('updated_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+        if (existing) return existing;
+
+        const chatData = {
+            user_id: userId,
+            channel: platform,
+            funnel_stage: '1 - Lead'
+        };
+        if (storeId) chatData.store_id = storeId;
+
+        const { data: newChat, error: createError } = await supabaseAdmin
+            .from('chats')
+            .insert(chatData)
+            .select()
+            .single();
+
+        if (createError) throw createError;
+
+        try {
+            await supabaseAdmin.from('projects').insert({
+                chat_id: newChat.id,
+                estatus_embudo: '1 - Lead',
+                updated_at: new Date().toISOString()
+            });
+        } catch (pErr) {
+            console.error('Error auto-creating project for new Meta chat:', pErr);
+        }
+
+        return newChat;
+    } catch (error) {
+        console.error(`Error in getOrCreateMetaChat (${platform}):`, error);
+        throw error;
+    }
+}

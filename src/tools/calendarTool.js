@@ -2,6 +2,7 @@ import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { calendarService } from "../services/calendarService.js";
 import { supabaseAdmin } from "../services/supabase.js";
+import { notifyAppointmentScheduled } from "../services/appointmentNotificationService.js";
 
 export const agendarReunionTool = tool(
     async ({ nombre_cliente, fecha_hora_iso, email_cliente, telefono_cliente }, config) => {
@@ -14,9 +15,27 @@ export const agendarReunionTool = tool(
             if (result.success) {
                 // Auto-sincronizar el estado del cliente en Supabase a '8 - Agendado'
                 const threadId = config?.configurable?.thread_id;
+                let finalTelefono = telefono_cliente;
+
                 if (threadId) {
                     const chatId = threadId.replace('conversation_', '');
                     
+                    // Si no se proporcionó teléfono en la llamada a la herramienta, obtenerlo del chat/usuario
+                    if (!finalTelefono) {
+                        try {
+                            const { data: chatData } = await supabaseAdmin
+                                .from('chats')
+                                .select('user_id, users(phone_number, display_name)')
+                                .eq('id', chatId)
+                                .single();
+                            if (chatData?.users?.phone_number) {
+                                finalTelefono = chatData.users.phone_number;
+                            }
+                        } catch (err) {
+                            // Ignorar error al consultar teléfono secundario
+                        }
+                    }
+
                     await supabaseAdmin
                         .from('chats')
                         .update({
@@ -45,6 +64,16 @@ export const agendarReunionTool = tool(
                         await supabaseAdmin.from('projects').insert(projectPayload);
                     }
                 }
+
+                // Notificar al equipo por WhatsApp (en segundo plano para no demorar la respuesta de la IA)
+                notifyAppointmentScheduled({
+                    nombreCliente: nombre_cliente,
+                    telefonoCliente: finalTelefono || 'No especificado',
+                    fechaHoraIso: fecha_hora_iso,
+                    meetLink: result.meetLink
+                }).catch(err => {
+                    console.error('Error notificando agendamiento al equipo:', err);
+                });
 
                 let responseText = `✅ Éxito: ${result.message}\n`;
                 if (result.meetLink) {

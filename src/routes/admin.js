@@ -2,7 +2,7 @@ import express from 'express';
 import { supabaseAdmin } from '../services/supabase.js';
 import { authMiddleware, requireRole } from '../middleware/authMiddleware.js';
 import { getPromptDetails, saveSystemPrompt, resetSystemPrompt, getPromptHistory } from '../services/promptService.js';
-import { scanResidentialProjects, getScoutedProjectsHistory, deleteScoutedProject, findProjectByName } from '../services/prospectingService.js';
+import { scanResidentialProjects, getScoutedProjectsHistory, deleteScoutedProject, searchLocalScoutedProjects, clearAllScoutedProjects } from '../services/prospectingService.js';
 import { logger } from '../middleware/logger.js';
 import { catchAsync } from '../utils/errors.js';
 
@@ -277,17 +277,28 @@ router.get('/prospecting/history', catchAsync(async (req, res) => {
 
 /**
  * POST /api/admin/prospecting/search-project
- * Busca o rastrea un proyecto específico por nombre en constructoras oficiales
+ * Busca proyectos exclusivamente en la base de datos local (Supabase).
+ * No consulta internet (Google Serper).
  */
 router.post('/prospecting/search-project', catchAsync(async (req, res) => {
-    const { projectName, city = 'Bogotá' } = req.body;
-    logger.info('Admin: Search specific project requested', { adminId: req.user.id, projectName, city });
-    const projects = await findProjectByName({ projectName, city });
+    const { projectName, city } = req.body;
+    logger.info('Admin: Search local project requested', { adminId: req.user.id, projectName, city });
+    const projects = await searchLocalScoutedProjects({ projectName, city });
     res.json({
         success: true,
         count: projects.length,
         projects
     });
+}));
+
+/**
+ * POST /api/admin/prospecting/clear-all
+ * Vacía por completo la lista de proyectos de prospección
+ */
+router.post('/prospecting/clear-all', catchAsync(async (req, res) => {
+    logger.info('Admin: Clear all scouted projects requested', { adminId: req.user.id });
+    const result = await clearAllScoutedProjects();
+    res.json(result);
 }));
 
 /**

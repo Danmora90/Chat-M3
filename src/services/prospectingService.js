@@ -463,6 +463,65 @@ export async function scanResidentialProjects({ city = 'Bogotá', year = '2026',
 }
 
 /**
+ * Busca proyectos ÚNICAMENTE en la base de datos local (Supabase).
+ * Utilizado por el buscador del panel administrativo (no rastrea internet).
+ */
+export async function searchLocalScoutedProjects({ projectName, city } = {}) {
+    if (!projectName || !projectName.trim()) {
+        return [];
+    }
+    const cleanName = projectName.trim();
+    logger.info(`Searching local scouted projects for: "${cleanName}" in city: ${city || 'any'}`);
+
+    try {
+        let query = supabaseAdmin
+            .from('scouted_projects')
+            .select('*')
+            .ilike('name', `%${cleanName}%`);
+
+        if (city && city !== 'all' && city !== 'Cundinamarca' && city !== 'Todas') {
+            query = query.ilike('city', `%${city}%`);
+        }
+
+        const { data, error } = await query.order('scouted_at', { ascending: false }).limit(25);
+
+        if (error) {
+            logger.error('Error querying local scouted projects:', error);
+            return [];
+        }
+
+        return data || [];
+    } catch (err) {
+        logger.error('Exception in searchLocalScoutedProjects:', err.message);
+        return [];
+    }
+}
+
+/**
+ * Vacía por completo la tabla scouted_projects en Supabase
+ */
+export async function clearAllScoutedProjects() {
+    try {
+        logger.info('Vaciando tabla scouted_projects en Supabase...');
+        const { error } = await supabaseAdmin
+            .from('scouted_projects')
+            .delete()
+            .neq('id', '___non_existent_id___');
+
+        if (error) {
+            logger.error('Error clearing scouted_projects:', error);
+            throw error;
+        }
+
+        logger.info('Tabla scouted_projects vaciada con éxito.');
+        return { success: true, message: 'Todos los proyectos fueron eliminados exitosamente.' };
+    } catch (err) {
+        logger.error('Exception in clearAllScoutedProjects:', err.message);
+        throw err;
+    }
+}
+
+/**
  * Busca un proyecto específico por nombre:
  * 1. Primero en la base de datos Supabase
  * 2. Si no existe, lo rastrea en Google Serper en los sitios oficiales de constructoras y lo guarda

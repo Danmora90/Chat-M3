@@ -11,6 +11,7 @@ import { processPaymentTool as registerSaleTool } from "../tools/paymentTools.js
 import { updateChatTagTool } from "../tools/chatTaggingTool.js";
 import { agendarReunionTool } from "../tools/calendarTool.js";
 import { crmSyncTool } from "../tools/crmSyncTool.js";
+import { buscarProyectoInmobiliarioTool } from "../tools/realEstateTool.js";
 import { PostgresSaver } from "../checkpoints/postgresSaver.js";
 import { createOpenAIModel } from "../services/openai.js";
 import { logger } from "../middleware/logger.js";
@@ -48,7 +49,8 @@ export async function createAgent() {
             registerSaleTool,
             updateChatTagTool,
             agendarReunionTool,
-            crmSyncTool
+            crmSyncTool,
+            buscarProyectoInmobiliarioTool
         ];
         const model = createOpenAIModel().bindTools(tools);
 

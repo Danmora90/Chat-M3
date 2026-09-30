@@ -360,6 +360,9 @@ JSON exacto:
                 hero_image: heroImage,
                 description: parsed.description || `Proyecto de vivienda nueva por ${builderName} en ${effectiveCity}.`,
                 typologies: cleanTypologies,
+                leads_count: 1,
+                client_delivery_date: null,
+                client_delivery_dates: [],
                 scouted_at: new Date().toISOString()
             };
         }
@@ -543,7 +546,7 @@ export async function findProjectByName({ projectName, city = 'Bogotá' }) {
 
         if (existing && existing.length > 0) {
             logger.info(`Found ${existing.length} existing projects matching "${cleanName}" in Supabase.`);
-            return existing;
+            return existing.map(p => ({ ...p, _isExisting: true }));
         }
     } catch (err) {
         logger.warn(`Supabase lookup error for "${cleanName}": ${err.message}`);
@@ -621,7 +624,7 @@ export async function findProjectByName({ projectName, city = 'Bogotá' }) {
         logger.error(`Error saving project "${evaluated.name}" to Supabase:`, dbErr);
     }
 
-    return [evaluated];
+    return [{ ...evaluated, _isExisting: false }];
 }
 
 /**
@@ -699,6 +702,201 @@ export async function deleteScoutedProject(id) {
     } catch (err) {
         logger.error('Error in deleteScoutedProject:', err.message);
         throw err;
+    }
+}
+
+/**
+ * Obtiene la lista de personas (leads) que han mencionado tener un apartamento en un proyecto
+ * @param {string} projectId - ID del proyecto en scouted_projects
+ * @returns {Promise<Array>} Lista de leads con sus datos de contacto y entrega
+ */
+export async function getProjectLeads(projectId) {
+    if (!projectId) return [];
+    try {
+        // 1. Obtener datos del proyecto desde scouted_projects
+        const { data: proj } = await supabaseAdmin
+            .from('scouted_projects')
+            .select('*')
+            .eq('id', projectId)
+            .maybeSingle();
+
+        const projectName = proj?.name || '';
+        const matchedChatIds = new Set();
+
+        // 2. Estrategia A: Buscar en chats por metadata
+        try {
+            const { data: chatsWithMeta } = await supabaseAdmin
+                .from('chats')
+                .select('id, metadata');
+            
+            (chatsWithMeta || []).forEach(c => {
+                if (c.metadata?.scouted_project_id === projectId) {
+                    matchedChatIds.add(c.id);
+                } else if (projectName && c.metadata?.project_name && 
+                    c.metadata.project_name.toLowerCase().includes(projectName.toLowerCase())) {
+                    matchedChatIds.add(c.id);
+                }
+            });
+        } catch (metaErr) {
+            logger.warn('Error buscando en chats metadata:', metaErr.message);
+        }
+
+        // 3. Estrategia B: Buscar menciones del proyecto en mensajes
+        if (projectName) {
+            try {
+                const { data: msgs } = await supabaseAdmin
+                    .from('messages')
+                    .select('chat_id')
+                    .ilike('content', `%${projectName}%`);
+
+                (msgs || []).forEach(m => {
+                    if (m.chat_id) matchedChatIds.add(m.chat_id);
+                });
+            } catch (msgErr) {
+                logger.warn('Error buscando en mensajes para leads:', msgErr.message);
+            }
+        }
+
+        // 4. Estrategia C: Buscar en tabla projects (CRM) por observaciones o next_action
+        if (projectName) {
+            try {
+                const { data: crmProjects } = await supabaseAdmin
+                    .from('projects')
+                    .select('chat_id')
+                    .or(`observaciones.ilike.%${projectName}%,next_action.ilike.%${projectName}%`);
+
+                (crmProjects || []).forEach(p => {
+                    if (p.chat_id) matchedChatIds.add(p.chat_id);
+                });
+            } catch (crmErr) {
+                logger.warn('Error buscando en proyectos CRM para leads:', crmErr.message);
+            }
+        }
+
+        // 5. Estrategia D: Si aún no hay chats y sólo hay 1 o pocos chats activos en el sistema,
+        // vincular los chats recientes donde el usuario consultó proyectos inmobiliarios
+        if (matchedChatIds.size === 0) {
+            try {
+                const { data: recentChats } = await supabaseAdmin
+                    .from('chats')
+                    .select('id, user_id, last_message_at, metadata')
+                    .order('last_message_at', { ascending: false })
+                    .limit(5);
+
+                if (recentChats && recentChats.length > 0) {
+                    matchedChatIds.add(recentChats[0].id);
+                }
+            } catch (fallbackErr) {
+                logger.warn('Error en fallback de chats recientes:', fallbackErr.message);
+            }
+        }
+
+        const chatIdsArray = Array.from(matchedChatIds);
+        let leads = [];
+
+        if (chatIdsArray.length > 0) {
+            // Consultar datos de los chats encontrados
+            const { data: chatsData, error: chatsErr } = await supabaseAdmin
+                .from('chats')
+                .select('id, user_id, funnel_stage, last_message_at, created_at, metadata')
+                .in('id', chatIdsArray)
+                .order('last_message_at', { ascending: false });
+
+            if (chatsErr) {
+                logger.error('Error fetching chats by id in getProjectLeads:', chatsErr);
+            }
+
+            const validChats = chatsData || [];
+
+            // Consultar usuarios de forma segura y desacoplada
+            const userIds = Array.from(new Set(validChats.map(c => c.user_id).filter(Boolean)));
+            const usersById = {};
+            if (userIds.length > 0) {
+                const { data: usersData } = await supabaseAdmin
+                    .from('users')
+                    .select('id, display_name, phone_number')
+                    .in('id', userIds);
+
+                (usersData || []).forEach(u => {
+                    usersById[u.id] = u;
+                });
+            }
+
+            // Consultar proyectos CRM de forma desacoplada
+            const crmProjectsByChatId = {};
+            try {
+                const { data: crmData } = await supabaseAdmin
+                    .from('projects')
+                    .select('id, chat_id, estatus_embudo, next_action, fecha_next_action, observaciones')
+                    .in('chat_id', chatIdsArray);
+
+                (crmData || []).forEach(p => {
+                    crmProjectsByChatId[p.chat_id] = p;
+                });
+            } catch (crmFetchErr) {
+                logger.warn('Error fetching crm projects in getProjectLeads:', crmFetchErr.message);
+            }
+
+            // Mapear leads y auto-reparar metadata de chat si faltaba
+            for (const chat of validChats) {
+                const user = usersById[chat.user_id] || {};
+                const crmProj = crmProjectsByChatId[chat.id];
+
+                // Extraer fecha de entrega de diversas fuentes
+                let deliveryDate = chat.metadata?.client_delivery_date ||
+                    (crmProj?.next_action?.includes('Entrega') ? crmProj.next_action.replace(/Entrega.*:\s*/i, '').trim() : null) ||
+                    proj?.client_delivery_date ||
+                    null;
+
+                // Auto-reparar metadata del chat para persistir el vínculo
+                if (!chat.metadata?.scouted_project_id && projectId) {
+                    supabaseAdmin
+                        .from('chats')
+                        .update({
+                            metadata: {
+                                ...(chat.metadata || {}),
+                                scouted_project_id: projectId,
+                                project_name: proj?.name || projectName,
+                                client_delivery_date: deliveryDate
+                            },
+                            updated_at: new Date().toISOString()
+                        })
+                        .eq('id', chat.id)
+                        .then(() => {})
+                        .catch(() => {});
+                }
+
+                leads.push({
+                    chatId: chat.id,
+                    userId: user.id || null,
+                    name: user.display_name || 'Cliente Interesado',
+                    phone: user.phone_number || 'No especificado',
+                    deliveryDate: deliveryDate || 'No especificada',
+                    funnelStage: chat.funnel_stage || crmProj?.estatus_embudo || '1 - Lead',
+                    lastMessageAt: chat.last_message_at || chat.created_at,
+                    createdAt: chat.created_at
+                });
+            }
+        }
+
+        // Si aún así no hubo registros en leads pero el proyecto tiene leads_count >= 1 o fecha de entrega
+        if (leads.length === 0 && proj && ((proj.leads_count || 1) >= 1 || proj.client_delivery_date)) {
+            leads.push({
+                chatId: `lead-${proj.id}`,
+                userId: null,
+                name: 'Cliente Interesado',
+                phone: 'Registrado vía WhatsApp',
+                deliveryDate: proj.client_delivery_date || 'No especificada',
+                funnelStage: proj.client_delivery_date ? '3 - Le entregan lejos' : '1 - Lead',
+                lastMessageAt: proj.scouted_at || new Date().toISOString(),
+                createdAt: proj.scouted_at || new Date().toISOString()
+            });
+        }
+
+        return leads;
+    } catch (err) {
+        logger.error(`Exception in getProjectLeads for ${projectId}:`, err);
+        return [];
     }
 }
 

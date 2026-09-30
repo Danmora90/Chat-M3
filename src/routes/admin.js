@@ -2,7 +2,7 @@ import express from 'express';
 import { supabaseAdmin } from '../services/supabase.js';
 import { authMiddleware, requireRole } from '../middleware/authMiddleware.js';
 import { getPromptDetails, saveSystemPrompt, resetSystemPrompt, getPromptHistory } from '../services/promptService.js';
-import { scanResidentialProjects, getScoutedProjectsHistory, deleteScoutedProject, searchLocalScoutedProjects, clearAllScoutedProjects } from '../services/prospectingService.js';
+import { scanResidentialProjects, getScoutedProjectsHistory, deleteScoutedProject, searchLocalScoutedProjects, clearAllScoutedProjects, getProjectLeads } from '../services/prospectingService.js';
 import { logger } from '../middleware/logger.js';
 import { catchAsync } from '../utils/errors.js';
 
@@ -310,6 +310,21 @@ router.delete('/prospecting/:id', catchAsync(async (req, res) => {
     logger.info('Admin: Deleting scouted project', { adminId: req.user.id, projectId: id });
     const result = await deleteScoutedProject(id);
     res.json(result);
+}));
+
+/**
+ * GET /api/admin/prospecting/:id/leads
+ * Obtiene la lista de personas (leads) interesadas o asociadas a este proyecto
+ */
+router.get('/prospecting/:id/leads', catchAsync(async (req, res) => {
+    const { id } = req.params;
+    logger.info('Admin: Project leads requested', { adminId: req.user.id, projectId: id });
+    const leads = await getProjectLeads(id);
+    res.json({
+        success: true,
+        count: leads.length,
+        leads
+    });
 }));
 
 export default router;

@@ -2,7 +2,7 @@ import express from 'express';
 import os from 'os';
 import path from 'path';
 import { getAgent } from '../agent/graph.js';
-import { getOrCreateUser, getOrCreateChat, hasMessageSid, saveMessage } from '../services/supabase.js';
+import { getOrCreateUser, getOrCreateChat, hasMessageSid, saveMessage, supabaseAdmin } from '../services/supabase.js';
 import { sendWhatsAppMessage, downloadMediaToFile } from '../services/twilio.js';
 import { processInboundMedia } from '../services/mediaService.js';
 import { processVideo, cleanupTempFiles } from '../utils/mediaProcessor.js';
@@ -282,16 +282,16 @@ router.post('/whatsapp', twilioWebhookValidator, catchAsync(async (req, res) => 
             toolCalls: lastMessage.tool_calls?.length || 0
         });
 
-        // 8. Guardar respuesta del agente en la base de datos
-        await saveMessage(chat.id, user.id, 'assistant', responseText);
-
-        // 9. Enviar respuesta por WhatsApp
+        // 8. Enviar respuesta por WhatsApp
         const twilioResponse = await sendWhatsAppMessage(phoneNumber, responseText);
 
         logger.info('Response sent to WhatsApp', {
             to: phoneNumber,
             twilioSid: twilioResponse.sid
         });
+
+        // 9. Guardar respuesta del agente en la base de datos con su message_sid
+        await saveMessage(chat.id, user.id, 'assistant', responseText, {}, twilioResponse.sid);
 
         // 10. Confirmar recepción a Twilio
         res.status(200).send('OK');
@@ -317,6 +317,81 @@ router.post('/whatsapp', twilioWebhookValidator, catchAsync(async (req, res) => 
         res.status(500).json({ error: 'Internal server error' });
     }
 }));
+
+/**
+ * Webhook de estado de mensajes de Twilio (Status Callback)
+ * Twilio envía notificaciones cuando un mensaje cambia de estado:
+ * 'queued' -> 'sent' -> 'delivered' -> 'read', o 'failed' / 'undelivered'
+ */
+router.post('/status', catchAsync(async (req, res) => {
+    const { MessageSid, MessageStatus, ErrorCode, ErrorMessage } = req.body;
+
+    logger.info('Twilio message status update received', {
+        messageSid: MessageSid,
+        status: MessageStatus,
+        errorCode: ErrorCode,
+        errorMessage: ErrorMessage
+    });
+
+    if (!MessageSid || !MessageStatus) {
+        return res.status(200).send('OK');
+    }
+
+    try {
+        // 1. Buscar el mensaje por su message_sid
+        const { data: existingMessage, error: findError } = await supabaseAdmin
+            .from('messages')
+            .select('id, metadata, status')
+            .eq('message_sid', MessageSid)
+            .maybeSingle();
+
+        if (findError) {
+            logger.error('Error finding message by message_sid', { messageSid: MessageSid, error: findError });
+            return res.status(200).send('OK');
+        }
+
+        if (existingMessage) {
+            const updatedMetadata = { ...(existingMessage.metadata || {}) };
+
+            if (ErrorCode || ErrorMessage) {
+                updatedMetadata.twilio_error = {
+                    code: ErrorCode || null,
+                    message: ErrorMessage || 'Error desconocido de Twilio'
+                };
+            }
+
+            const { error: updateError } = await supabaseAdmin
+                .from('messages')
+                .update({
+                    status: MessageStatus,
+                    metadata: updatedMetadata
+                })
+                .eq('id', existingMessage.id);
+
+            if (updateError) {
+                logger.error('Error updating message status in Supabase', {
+                    messageId: existingMessage.id,
+                    error: updateError
+                });
+            } else {
+                logger.info(`Message ${existingMessage.id} status updated to ${MessageStatus}`);
+            }
+        } else {
+            logger.debug('No message found in DB for MessageSid', { messageSid: MessageSid });
+        }
+    } catch (err) {
+        logger.error('Unexpected error processing Twilio status callback', { error: err.message });
+    }
+
+    res.status(200).send('OK');
+}));
+
+/**
+ * Endpoint para verificar el status webhook
+ */
+router.get('/status', (req, res) => {
+    res.status(200).send('Twilio status callback webhook is active');
+});
 
 /**
  * Endpoint para verificar el webhook (usado por Twilio durante configuración)

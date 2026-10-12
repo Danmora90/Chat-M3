@@ -33,6 +33,10 @@ export async function sendWhatsAppMessage(to, message, mediaUrl = null) {
             payload.mediaUrl = [mediaUrl];
         }
 
+        if (process.env.TWILIO_STATUS_CALLBACK_URL) {
+            payload.statusCallback = process.env.TWILIO_STATUS_CALLBACK_URL;
+        }
+
         const response = await client.messages.create(payload);
 
         return response;
@@ -64,6 +68,10 @@ export async function sendWhatsAppTemplate(to, contentSid, contentVariables = {}
             contentSid: contentSid,
             contentVariables: JSON.stringify(contentVariables)
         };
+
+        if (process.env.TWILIO_STATUS_CALLBACK_URL) {
+            payload.statusCallback = process.env.TWILIO_STATUS_CALLBACK_URL;
+        }
 
         const response = await client.messages.create(payload);
         return response;

@@ -10,6 +10,7 @@ import { transcribeAudio } from '../services/transcriptionService.js';
 import { twilioWebhookValidator } from '../middleware/validator.js';
 import { logger } from '../middleware/logger.js';
 import { extractPhoneNumber, generateThreadId } from '../utils/session.js';
+import { automationService } from '../services/automationService.js';
 import { catchAsync } from '../utils/errors.js';
 
 const router = express.Router();
@@ -53,6 +54,9 @@ router.post('/whatsapp', twilioWebhookValidator, catchAsync(async (req, res) => 
                 return res.status(200).send('OK');
             }
         }
+
+        // Cancelar seguimientos pendientes si el cliente acaba de responder
+        automationService.onCustomerReplied(chat.id);
 
         // LOGICA DE CONTENIDO + ADJUNTOS
         let messageContent = Body || '';

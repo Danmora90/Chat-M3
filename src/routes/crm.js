@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { supabaseAdmin } from "../services/supabase.js";
+import { automationService } from "../services/automationService.js";
 import { logger } from "../middleware/logger.js";
 import { authMiddleware } from "../middleware/authMiddleware.js";
 
@@ -289,6 +290,8 @@ router.patch("/projects/:id", async (req, res) => {
                     updated_at: new Date().toISOString()
                 })
                 .eq("id", updatedProject.chat_id);
+
+            automationService.triggerFlowForStage(updatedProject.chat_id, estatus_embudo);
         }
 
         res.json({ success: true, data: updatedProject });

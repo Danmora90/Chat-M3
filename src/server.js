@@ -15,6 +15,8 @@ import taskRoutes from './routes/tasks.js';
 import notificationRoutes from './routes/notifications.js';
 import maschatRoutes from './routes/maschat.js';
 import templateRoutes from './routes/templates.js';
+import automationsRoutes from './routes/automations.js';
+import { startAutomationWorker } from './jobs/automationWorker.js';
 import { createRateLimiter } from './middleware/rateLimiter.js';
 import { logger, requestLogger } from './middleware/logger.js';
 import { errorHandler } from './utils/errors.js';
@@ -61,6 +63,7 @@ app.use('/m3/meta', metaWebhookRoutes);
 app.use('/api/crm', crmRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/admin/templates', templateRoutes);
+app.use('/api/admin/automations', automationsRoutes);
 app.use('/admin', adminRoutes);
 app.use('/api', apiRoutes);
 app.use('/api/metrics', metricsRoutes);
@@ -115,6 +118,9 @@ app.listen(PORT, () => {
     console.log(`📍 Running on: http://localhost:${PORT}`);
     console.log(`🏥 Health check: http://localhost:${PORT}/health`);
     console.log(`📱 Webhook: http://localhost:${PORT}/m3/whatsapp\n`);
+
+    // Iniciar worker de automatizaciones en segundo plano (cada 60 segundos)
+    startAutomationWorker(60);
 });
 
 // Manejo de errores no capturados

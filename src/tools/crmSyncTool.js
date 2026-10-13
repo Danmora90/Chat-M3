@@ -1,6 +1,7 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { supabaseAdmin } from "../services/supabase.js";
+import { automationService } from "../services/automationService.js";
 
 export const crmSyncTool = tool(
     async ({ funnel_stage, next_action, observaciones }, config) => {
@@ -17,6 +18,11 @@ export const crmSyncTool = tool(
                 .from('chats')
                 .update(chatPayload)
                 .eq('id', chatId);
+
+            // Disparar flujos asociados al nuevo estado del embudo
+            if (funnel_stage) {
+                automationService.triggerFlowForStage(chatId, funnel_stage);
+            }
 
             // Actualizar o crear proyecto asociado
             const { data: existingProject } = await supabaseAdmin

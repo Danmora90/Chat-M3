@@ -121,33 +121,8 @@ router.post('/:sid/send', catchAsync(async (req, res) => {
     // 1. Enviar el mensaje con Twilio
     const response = await sendWhatsAppTemplate(to, sid, variables || {});
 
-    // 2. Obtener el cuerpo de la plantilla y sustituir variables para el chat
-    let messageBody = '';
-    try {
-        const { data: tmplRecord } = await supabaseAdmin
-            .from('whatsapp_templates')
-            .select('body')
-            .eq('content_sid', sid)
-            .maybeSingle();
-
-        if (tmplRecord?.body) {
-            messageBody = tmplRecord.body;
-        } else {
-            const twilioContent = await twilioClient.content.v1.contents(sid).fetch();
-            messageBody = twilioContent.types?.['twilio/text']?.body || '';
-        }
-
-        // Reemplazar las variables dinámicas {{1}}, {{2}}, etc. con los valores enviados
-        if (variables && typeof variables === 'object') {
-            for (const [key, val] of Object.entries(variables)) {
-                const regex = new RegExp(`\\{\\{${key}\\}\\}`, 'g');
-                messageBody = messageBody.replace(regex, val != null ? String(val) : '');
-            }
-        }
-    } catch (tmplErr) {
-        logger.warn('Could not render template text for chat history', { error: tmplErr.message });
-        messageBody = `[Plantilla WhatsApp enviada: ${sid}]`;
-    }
+    // 2. Obtener el cuerpo renderizado de la plantilla para el chat
+    const messageBody = await twilioContentService.getRenderedTemplateBody(sid, variables || {});
 
     // 3. Registrar el mensaje en la conversación activa del usuario en Supabase
     let savedMsg = null;

@@ -248,5 +248,66 @@ export const twilioContentService = {
             logger.error('TwilioContent: Error deleting template', { contentSid, error: error.message });
             throw error;
         }
+    },
+
+    /**
+     * Obtiene el texto renderizado de una plantilla, buscando en DB o consultando a Twilio directamente y cacheando en DB.
+     * @param {string} contentSid
+     * @param {Object} [variables]
+     * @returns {Promise<string>}
+     */
+    async getRenderedTemplateBody(contentSid, variables = {}) {
+        if (!contentSid) return '';
+        let body = '';
+
+        try {
+            // 1. Intentar buscar en tabla whatsapp_templates
+            const { data: dbTmpl } = await supabaseAdmin
+                .from('whatsapp_templates')
+                .select('body, friendly_name')
+                .eq('content_sid', contentSid)
+                .maybeSingle();
+
+            if (dbTmpl?.body) {
+                body = dbTmpl.body;
+            } else {
+                // 2. Si no está en DB, consultar directamente a Twilio
+                const content = await client.content.v1.contents(contentSid).fetch();
+                body = content.types?.['twilio/text']?.body ||
+                       content.types?.['twilio/quick-reply']?.body ||
+                       content.types?.['twilio/call-to-action']?.body ||
+                       content.types?.['twilio/card']?.body || '';
+
+                // Cachear en whatsapp_templates para acelerar futuras consultas
+                if (body) {
+                    try {
+                        await supabaseAdmin
+                            .from('whatsapp_templates')
+                            .upsert({
+                                content_sid: contentSid,
+                                friendly_name: content.friendlyName || contentSid,
+                                body: body,
+                                language: content.language || 'es',
+                                status: 'approved',
+                                updated_at: new Date().toISOString()
+                            }, { onConflict: 'content_sid' });
+                    } catch (cacheErr) {
+                        // Silencioso
+                    }
+                }
+            }
+
+            // 3. Reemplazar variables dinámicas {{1}}, {{2}}, etc.
+            if (body && variables && typeof variables === 'object') {
+                for (const [key, val] of Object.entries(variables)) {
+                    const regex = new RegExp(`\\{\\{${key}\\}\\}`, 'g');
+                    body = body.replace(regex, val != null ? String(val) : '');
+                }
+            }
+        } catch (err) {
+            logger.warn('TwilioContent: Error fetching template body', { contentSid, error: err.message });
+        }
+
+        return body || `[Plantilla enviada: ${contentSid}]`;
     }
 };

@@ -46,7 +46,13 @@ export const AgentState = Annotation.Root({
             metrosCuadrados: null,
             presupuesto: null,
             esViable: null,
-            areaViable: null
+            areaViable: null,
+            funnelStage: '1 - Lead',
+            valorCotizadoMin: null,
+            valorCotizadoMax: null,
+            nextAction: null,
+            fechaEntregaConstructora: null,
+            observaciones: null
         })
     })
 });

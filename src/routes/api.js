@@ -304,6 +304,7 @@ router.get('/chats', authMiddleware, catchAsync(async (req, res) => {
             .select(`
                 id,
                 user_id,
+                channel,
                 status,
                 is_ai_paused,
                 created_at,
@@ -331,7 +332,7 @@ router.get('/chats', authMiddleware, catchAsync(async (req, res) => {
     const runFallbackSelect = async () => {
         let query = supabaseAdmin
             .from('chats')
-            .select('id,user_id,status,is_ai_paused,created_at,updated_at,last_message_at,last_message_preview,metadata')
+            .select('id,user_id,channel,status,is_ai_paused,created_at,updated_at,last_message_at,last_message_preview,metadata')
             .eq('status', requestedStatus);
 
         if (req.user.store_id) {
@@ -383,6 +384,7 @@ router.get('/chats', authMiddleware, catchAsync(async (req, res) => {
     // Calcular unread_count para cada chat de manera resiliente
     const chatIds = chats.map(c => c.id);
     let unreadCounts = {};
+    let latestMessagesByChat = {};
 
     if (chatIds.length > 0) {
         try {
@@ -401,35 +403,74 @@ router.get('/chats', authMiddleware, catchAsync(async (req, res) => {
                 });
             } else if (unreadError) {
                 logger.error('Error fetching unread counts', unreadError);
-                // No lanzamos error para permitir que la lista cargue aunque sea sin contadores
             }
         } catch (countError) {
             logger.error('Unexpected error calculating unread counts', countError);
         }
+
+        // Obtener el último mensaje real para cada chat desde la tabla messages
+        try {
+            const { data: latestMsgs, error: latestMsgsError } = await supabaseAdmin
+                .from('messages')
+                .select('chat_id, content, created_at, role')
+                .in('chat_id', chatIds)
+                .order('created_at', { ascending: false });
+
+            if (!latestMsgsError && latestMsgs) {
+                for (const msg of latestMsgs) {
+                    if (!latestMessagesByChat[msg.chat_id]) {
+                        latestMessagesByChat[msg.chat_id] = msg;
+                    }
+                }
+            }
+        } catch (msgErr) {
+            logger.error('Unexpected error fetching latest messages for preview:', msgErr);
+        }
     }
 
-    const adaptedChats = chats.map(chat => ({
-        id: chat.id,
-        chatId: chat.id,
-        phone: chat.users?.phone_number,
-        customer_phone: chat.users?.phone_number,
-        customer_name: chat.users?.display_name || chat.users?.phone_number || 'Cliente WhatsApp',
-        displayName: chat.users?.display_name || chat.users?.phone_number,
-        status: chat.status,
-        is_ai_paused: chat.is_ai_paused || false, // Nuevo campo para frontend
-        last_message_at: chat.last_message_at,
-        created_at: chat.created_at,
-        updated_at: chat.updated_at,
-        unread_count: unreadCounts[chat.id] || 0,
-        metadata: chat.metadata || {},
-        has_new_sale: chat.metadata?.has_new_sale || false,
-        current_tag: chat.metadata?.current_tag || 'normal',
-        // Objeto requerido para el sort y visualización en el front
-        last_message: {
-            content: chat.last_message_preview || '',
-            created_at: chat.last_message_at || chat.updated_at
-        }
-    }));
+    const adaptedChats = chats.map(chat => {
+        const rawChannel = (chat.channel || '').toLowerCase();
+        let normalizedChannel = 'whatsapp';
+        if (rawChannel.startsWith('instagram')) normalizedChannel = 'instagram';
+        else if (rawChannel.startsWith('facebook')) normalizedChannel = 'facebook';
+
+        const defaultName = normalizedChannel === 'instagram' 
+            ? 'Usuario Instagram' 
+            : normalizedChannel === 'facebook' 
+            ? 'Usuario Facebook' 
+            : 'Cliente WhatsApp';
+
+        const latestMsg = latestMessagesByChat[chat.id];
+        const previewContent = chat.last_message_preview || latestMsg?.content || '';
+        const realLastMessageDate = latestMsg?.created_at || chat.last_message_at || chat.updated_at || chat.created_at;
+
+        return {
+            id: chat.id,
+            chatId: chat.id,
+            channel: normalizedChannel,
+            phone: chat.users?.phone_number,
+            customer_phone: chat.users?.phone_number,
+            customer_name: chat.users?.display_name || chat.users?.phone_number || defaultName,
+            displayName: chat.users?.display_name || chat.users?.phone_number || defaultName,
+            status: chat.status,
+            is_ai_paused: chat.is_ai_paused || false,
+            last_message_at: realLastMessageDate,
+            created_at: chat.created_at,
+            updated_at: realLastMessageDate,
+            unread_count: unreadCounts[chat.id] || 0,
+            metadata: chat.metadata || {},
+            has_new_sale: chat.metadata?.has_new_sale || false,
+            current_tag: chat.metadata?.current_tag || 'normal',
+            last_message_preview: previewContent,
+            last_message: {
+                content: previewContent,
+                created_at: realLastMessageDate
+            }
+        };
+    });
+
+    // Ordenar de forma descendente por la fecha real del último mensaje
+    adaptedChats.sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime());
 
     res.json(adaptedChats); // Array directo
 }));

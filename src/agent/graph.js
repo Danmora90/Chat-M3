@@ -1,7 +1,7 @@
 import { StateGraph, END } from "@langchain/langgraph";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { AgentState } from "./state.js";
-import { systemPrompt } from "../prompts/system.js";
+import { getSystemPrompt } from "../services/promptService.js";
 import { materialSearchTool } from "../tools/materialSearch.js";
 import { webSearchTool } from "../tools/webSearch.js";
 import { updateUserDisplayNameTool } from "../tools/userProfile.js";
@@ -10,6 +10,8 @@ import { projectQuoterTool } from "../tools/projectQuoter.js";
 import { processPaymentTool as registerSaleTool } from "../tools/paymentTools.js"; // Renamed import
 import { updateChatTagTool } from "../tools/chatTaggingTool.js";
 import { agendarReunionTool } from "../tools/calendarTool.js";
+import { crmSyncTool } from "../tools/crmSyncTool.js";
+import { buscarProyectoInmobiliarioTool } from "../tools/realEstateTool.js";
 import { PostgresSaver } from "../checkpoints/postgresSaver.js";
 import { createOpenAIModel } from "../services/openai.js";
 import { logger } from "../middleware/logger.js";
@@ -46,7 +48,9 @@ export async function createAgent() {
             projectQuoterTool,
             registerSaleTool,
             updateChatTagTool,
-            agendarReunionTool
+            agendarReunionTool,
+            crmSyncTool,
+            buscarProyectoInmobiliarioTool
         ];
         const model = createOpenAIModel().bindTools(tools);
 
@@ -94,7 +98,8 @@ export async function createAgent() {
                     calendarTable += `- ${dayName.toUpperCase()} ${dayNum} de ${monthName} de ${year}${label} -> ISO Fecha: ${year}-${monthNum}-${dayNum}\n`;
                 }
 
-                const dynamicSystemPrompt = `${systemPrompt}
+                const activePrompt = await getSystemPrompt();
+                const dynamicSystemPrompt = `${activePrompt}
 
 --------------------------------------------------
 📌 REGLA SUPREMA TEMPORAL Y MANEJO DE MEMORIA (OBLIGATORIO):

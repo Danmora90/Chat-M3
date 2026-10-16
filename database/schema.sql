@@ -37,6 +37,9 @@ CREATE TABLE public.chats (
   tags ARRAY DEFAULT '{}'::text[],
   metadata jsonb DEFAULT '{}'::jsonb,
   store_id uuid,
+  assigned_agent_id uuid,
+  funnel_stage text DEFAULT '1 - Lead'::text,
+  last_interaction_type text,
   last_message_at timestamp with time zone DEFAULT now(),
   updated_at timestamp with time zone DEFAULT now(),
   created_at timestamp with time zone DEFAULT now(),
@@ -44,7 +47,8 @@ CREATE TABLE public.chats (
   last_message_preview text,
   unread_count integer DEFAULT 0,
   CONSTRAINT chats_pkey PRIMARY KEY (id),
-  CONSTRAINT chats_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id)
+  CONSTRAINT chats_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id),
+  CONSTRAINT chats_assigned_agent_fkey FOREIGN KEY (assigned_agent_id) REFERENCES public.profiles(id)
 );
 CREATE TABLE public.messages (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -66,8 +70,19 @@ CREATE TABLE public.projects (
   total_area_m2 numeric,
   budget_total numeric,
   is_viable boolean,
-  status text DEFAULT 'en_cotizacion'::text,
+  area_viable_m2 numeric,
+  valor_cotizado_min numeric,
+  valor_cotizado_max numeric,
+  estatus_embudo text DEFAULT '1 - Lead'::text,
+  estatus_proyecto text DEFAULT 'en_cotizacion'::text,
+  fecha_entrega_constructora date,
+  next_action text,
+  fecha_next_action timestamp with time zone,
+  fecha_descuento timestamp with time zone,
+  valor_descuento numeric,
+  observaciones text,
   created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
   CONSTRAINT projects_pkey PRIMARY KEY (id),
   CONSTRAINT projects_chat_id_fkey FOREIGN KEY (chat_id) REFERENCES public.chats(id)
 );

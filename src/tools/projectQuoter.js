@@ -1,5 +1,6 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
+import { supabaseAdmin } from "../services/supabase.js";
 
 const BASE_M2 = 1000000; // Cálculo interno base por metro cuadrado (no mencionar al cliente)
 const MARGEN_MIN = 8000000;  // 8 millones COP
@@ -17,13 +18,57 @@ export const projectQuoterTool = tool(
             const baseCost = m2 * BASE_M2;
             const rangoMin = baseCost + MARGEN_MIN;
             const rangoMax = baseCost + MARGEN_MAX;
+            const presupuesto = (presupuesto_disponible && !isNaN(Number(presupuesto_disponible))) ? Number(presupuesto_disponible) : null;
+            const isViable = presupuesto ? (presupuesto >= rangoMin) : true;
+            const areaViable = (!isViable && presupuesto) ? Math.floor(presupuesto / BASE_M2) : m2;
+
+            // Persistir en Supabase si se provee thread_id / chatId
+            const threadId = config.configurable?.thread_id;
+            if (threadId) {
+                const chatId = threadId.replace('conversation_', '');
+                
+                // Actualizar o crear proyecto
+                const { data: existingProject } = await supabaseAdmin
+                    .from('projects')
+                    .select('id')
+                    .eq('chat_id', chatId)
+                    .maybeSingle();
+
+                const targetStage = !isViable ? '1 - No tiene presupuesto' : '6 - Lead';
+
+                const projectPayload = {
+                    chat_id: chatId,
+                    total_area_m2: m2,
+                    budget_total: presupuesto,
+                    is_viable: isViable,
+                    area_viable_m2: areaViable,
+                    valor_cotizado_min: rangoMin,
+                    valor_cotizado_max: rangoMax,
+                    estatus_embudo: targetStage,
+                    updated_at: new Date().toISOString()
+                };
+
+                if (existingProject?.id) {
+                    await supabaseAdmin.from('projects').update(projectPayload).eq('id', existingProject.id);
+                } else {
+                    await supabaseAdmin.from('projects').insert(projectPayload);
+                }
+
+                // Actualizar estado de la conversación en chats
+                await supabaseAdmin
+                    .from('chats')
+                    .update({
+                        funnel_stage: targetStage,
+                        updated_at: new Date().toISOString()
+                    })
+                    .eq('id', chatId);
+            }
 
             let respuesta = `📊 **Resultados de la Cotización Estimada:**\n`;
             respuesta += `- Área a remodelar: ${m2} m²\n`;
             respuesta += `- Rango estimado de remodelación integral: $${rangoMin.toLocaleString('es-CO')} a $${rangoMax.toLocaleString('es-CO')} COP\n\n`;
 
-            if (presupuesto_disponible && !isNaN(Number(presupuesto_disponible)) && Number(presupuesto_disponible) > 0) {
-                const presupuesto = Number(presupuesto_disponible);
+            if (presupuesto && presupuesto > 0) {
                 respuesta += `- Presupuesto proporcionado por el cliente: $${presupuesto.toLocaleString('es-CO')} COP\n`;
 
                 if (presupuesto >= rangoMin) {

@@ -33,11 +33,50 @@ export async function sendWhatsAppMessage(to, message, mediaUrl = null) {
             payload.mediaUrl = [mediaUrl];
         }
 
+        if (process.env.TWILIO_STATUS_CALLBACK_URL) {
+            payload.statusCallback = process.env.TWILIO_STATUS_CALLBACK_URL;
+        }
+
         const response = await client.messages.create(payload);
 
         return response;
     } catch (error) {
         console.error('Error sending WhatsApp message:', error);
+        throw error;
+    }
+}
+
+/**
+ * Envía una plantilla de WhatsApp a través de Twilio usando ContentSid y ContentVariables
+ * @param {string} to - Número de teléfono del destinatario (con o sin whatsapp:)
+ * @param {string} contentSid - SID de la plantilla en Twilio (HX...)
+ * @param {Object} contentVariables - Variables dinámicas { "1": "valor", "2": "valor" }
+ * @returns {Promise<Object>} Respuesta de Twilio
+ */
+export async function sendWhatsAppTemplate(to, contentSid, contentVariables = {}) {
+    try {
+        const cleanTo = String(to).replace(/^whatsapp:/i, '').trim().replace(/[^\d+]/g, '');
+        const formattedTo = `whatsapp:${cleanTo.startsWith('+') ? cleanTo : `+${cleanTo}`}`;
+
+        const rawFrom = process.env.TWILIO_PHONE_NUMBER || '+573045544151';
+        const cleanFrom = rawFrom.replace(/^whatsapp:/i, '').trim().replace(/[^\d+]/g, '');
+        const formattedFrom = `whatsapp:${cleanFrom.startsWith('+') ? cleanFrom : `+${cleanFrom}`}`;
+
+        const payload = {
+            from: formattedFrom,
+            to: formattedTo,
+            contentSid: contentSid,
+            contentVariables: JSON.stringify(contentVariables)
+        };
+
+        if (process.env.TWILIO_STATUS_CALLBACK_URL) {
+            payload.statusCallback = process.env.TWILIO_STATUS_CALLBACK_URL;
+        }
+
+        const response = await client.messages.create(payload);
+        return response;
+    } catch (error) {
+        console.error(`Error sending WhatsApp template to ${to}:`, error.message || error);
         throw error;
     }
 }

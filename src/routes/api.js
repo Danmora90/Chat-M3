@@ -7,6 +7,7 @@ import { logger } from '../middleware/logger.js';
 import { catchAsync } from '../utils/errors.js';
 import { salesService } from '../services/salesService.js';
 import { uploadFile } from '../services/firebase.js';
+import { updateAgentMemory } from '../agent/graph.js';
 import axios from 'axios';
 import multer from 'multer';
 
@@ -626,6 +627,19 @@ router.post('/chats/:id/messages', authMiddleware, catchAsync(async (req, res) =
             twilioSid
         );
 
+        // Sincronizar mensaje del asesor humano en la memoria de LangGraph
+        await updateAgentMemory(
+            id,
+            {
+                role: 'assistant',
+                content: content || ''
+            },
+            {
+                userPhone,
+                userId: chat.user_id
+            }
+        );
+
         res.status(201).json(messageData);
     } catch (dbError) {
         logger.error('Error saving manual message to DB', dbError);
@@ -715,6 +729,25 @@ router.post('/chats/:id/attachments', authMiddleware, uploadMiddleware.single('f
                 }]
             },
             twilioSid
+        );
+
+        // Construir contexto del archivo adjunto para la memoria del agente
+        let attachmentDesc = message ? `${message}\n` : '';
+        const fileType = file.mimetype.startsWith('image/') ? 'imagen' :
+            file.mimetype.startsWith('video/') ? 'video' :
+            file.mimetype.startsWith('audio/') ? 'audio' : 'documento';
+        attachmentDesc += `[El asesor envió un archivo (${fileType}): ${file.originalname || ''}]`;
+
+        await updateAgentMemory(
+            id,
+            {
+                role: 'assistant',
+                content: attachmentDesc.trim()
+            },
+            {
+                userPhone,
+                userId: chat.user_id
+            }
         );
 
         res.status(201).json(messageData);

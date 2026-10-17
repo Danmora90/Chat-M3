@@ -1,7 +1,7 @@
 import express from 'express';
 import { logger } from '../middleware/logger.js';
 import { catchAsync } from '../utils/errors.js';
-import { getAgent } from '../agent/graph.js';
+import { getAgent, updateAgentMemory } from '../agent/graph.js';
 import { 
     getOrCreateMetaUser, 
     getOrCreateMetaChat, 
@@ -155,6 +155,19 @@ async function handleDirectMessage(event, isInstagramObject, storeId, entryId) {
                 chatId: chat.id,
                 platform
             });
+
+            // Guardar el mensaje del usuario en la memoria de LangGraph para que persista al reactivar la IA
+            await updateAgentMemory(
+                chat.id,
+                {
+                    role: 'user',
+                    content: contentToProcess
+                },
+                {
+                    userId: user.id
+                }
+            );
+
             return;
         }
 

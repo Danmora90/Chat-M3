@@ -4,6 +4,7 @@ import { authMiddleware, requireRole } from '../middleware/authMiddleware.js';
 import { twilioContentService } from '../services/twilioContentService.js';
 import { sendWhatsAppTemplate } from '../services/twilio.js';
 import { supabaseAdmin, getOrCreateUser, getOrCreateChat, saveMessage } from '../services/supabase.js';
+import { updateAgentMemory } from '../agent/graph.js';
 import { logger } from '../middleware/logger.js';
 import { catchAsync } from '../utils/errors.js';
 
@@ -153,6 +154,19 @@ router.post('/:sid/send', catchAsync(async (req, res) => {
             userId: user.id,
             messageId: savedMsg?.id
         });
+
+        // Sincronizar mensaje de plantilla en la memoria de LangGraph
+        await updateAgentMemory(
+            chat.id,
+            {
+                role: 'assistant',
+                content: messageBody
+            },
+            {
+                userPhone: phoneNumber,
+                userId: user.id
+            }
+        );
     } catch (saveErr) {
         logger.error('Error saving template message to chat history', saveErr);
     }

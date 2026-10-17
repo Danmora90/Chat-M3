@@ -1,7 +1,7 @@
 import express from 'express';
 import os from 'os';
 import path from 'path';
-import { getAgent } from '../agent/graph.js';
+import { getAgent, updateAgentMemory } from '../agent/graph.js';
 import { getOrCreateUser, getOrCreateChat, hasMessageSid, saveMessage, supabaseAdmin } from '../services/supabase.js';
 import { sendWhatsAppMessage, downloadMediaToFile } from '../services/twilio.js';
 import { processInboundMedia } from '../services/mediaService.js';
@@ -243,6 +243,20 @@ router.post('/whatsapp', twilioWebhookValidator, catchAsync(async (req, res) => 
                 chatId: chat.id,
                 userPhone: phoneNumber
             });
+
+            // Guardar el mensaje del usuario en la memoria de LangGraph para que persista al reactivar la IA
+            await updateAgentMemory(
+                chat.id,
+                {
+                    role: 'user',
+                    content: messageContent
+                },
+                {
+                    userPhone: phoneNumber,
+                    userId: user.id
+                }
+            );
+
             return res.status(200).send('OK');
         }
 

@@ -1,6 +1,7 @@
 import { supabaseAdmin, saveMessage, getOrCreateUser, getOrCreateChat } from './supabase.js';
 import { sendWhatsAppTemplate, sendWhatsAppMessage } from './twilio.js';
 import { twilioContentService } from './twilioContentService.js';
+import { updateAgentMemory } from '../agent/graph.js';
 import { logger } from '../middleware/logger.js';
 
 /**
@@ -335,6 +336,19 @@ export const automationService = {
                                 step_index: task.step_index
                             },
                             sendRes.sid
+                        );
+
+                        // Sincronizar mensaje automatizado en la memoria de LangGraph
+                        await updateAgentMemory(
+                            chat.id,
+                            {
+                                role: 'assistant',
+                                content: messageBody
+                            },
+                            {
+                                userPhone: chat.users.phone_number,
+                                userId: chat.user_id
+                            }
                         );
 
                         executionResult = { sent_to: chat.users.phone_number, message_sid: sendRes.sid };

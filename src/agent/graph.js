@@ -15,6 +15,7 @@ import { buscarProyectoInmobiliarioTool } from "../tools/realEstateTool.js";
 import { PostgresSaver } from "../checkpoints/postgresSaver.js";
 import { createOpenAIModel } from "../services/openai.js";
 import { logger } from "../middleware/logger.js";
+import { generateThreadId } from "../utils/session.js";
 
 /**
  * Helper seguro para resolver el tipo de mensaje (instancia LangChain vs Objeto plano)
@@ -194,3 +195,52 @@ export async function getAgent() {
     }
     return agentInstance;
 }
+
+/**
+ * Actualiza el estado y memoria del agente en LangGraph sin invocar al modelo (Human Handoff / Intervención externa)
+ * @param {string} chatId - ID del chat
+ * @param {Array<Object>|Object} messages - Mensaje o mensajes para agregar [{ role, content }]
+ * @param {Object} [extraState={}] - Metadatos adicionales de estado (userPhone, userId, etc.)
+ */
+export async function updateAgentMemory(chatId, messages, extraState = {}) {
+    try {
+        if (!chatId || !messages) return;
+        const agent = await getAgent();
+        const threadId = generateThreadId(chatId);
+        const config = {
+            configurable: {
+                thread_id: threadId
+            }
+        };
+
+        const rawList = Array.isArray(messages) ? messages : [messages];
+        const formattedMessages = rawList.map(msg => {
+            if (typeof msg === 'string') {
+                return { role: 'assistant', content: msg };
+            }
+            return {
+                role: msg.role || 'assistant',
+                content: msg.content || ''
+            };
+        });
+
+        await agent.updateState(
+            config,
+            {
+                messages: formattedMessages,
+                chatId,
+                ...extraState
+            },
+            'agent'
+        );
+
+        logger.info('Agent memory updated via updateState (human/external interaction)', {
+            chatId,
+            threadId,
+            messageCount: formattedMessages.length
+        });
+    } catch (error) {
+        logger.error('Error updating agent memory with updateState:', error);
+    }
+}
+

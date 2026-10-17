@@ -24,6 +24,9 @@ import { errorHandler } from './utils/errors.js';
 const app = express();
 const PORT = process.env.PORT || 3010;
 
+// Confiar en el proxy inverso (Railway, Docker) para encabezados x-forwarded-*
+app.set('trust proxy', 1);
+
 // Configuración CORS
 const allowedOrigins = process.env.FRONTEND_URLS?.split(',').map(url => url.trim()) || [
     'http://localhost:5173',
@@ -59,6 +62,7 @@ app.use(createRateLimiter());
 
 // Routes
 app.use('/m3', webhookRoutes);
+app.use('/webhook', webhookRoutes); // Alias para soportar tanto /m3/whatsapp como /webhook/whatsapp
 app.use('/m3/meta', metaWebhookRoutes);
 app.use('/api/crm', crmRoutes);
 app.use('/api/admin', adminRoutes);

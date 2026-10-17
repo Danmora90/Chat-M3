@@ -13,7 +13,7 @@ export const createRateLimiter = () => {
 
         // Diferenciar entre webhooks de Twilio (por número) y API (por IP)
         keyGenerator: (req) => {
-            const isWebhook = req.originalUrl?.startsWith('/webhook/whatsapp');
+            const isWebhook = req.originalUrl?.startsWith('/webhook/whatsapp') || req.originalUrl?.startsWith('/m3/whatsapp');
             if (isWebhook && req.body?.From) {
                 return req.body.From;
             }

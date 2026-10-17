@@ -32,15 +32,19 @@ export const logger = winston.createLogger({
     ]
 });
 
-// En desarrollo, también mostrar en consola
-if (process.env.NODE_ENV !== 'production') {
-    logger.add(new winston.transports.Console({
-        format: winston.format.combine(
-            winston.format.colorize(),
-            winston.format.simple()
-        )
-    }));
-}
+// Mostrar SIEMPRE en consola para que los logs sean visibles en Railway, Docker y terminal
+logger.add(new winston.transports.Console({
+    format: winston.format.combine(
+        winston.format.colorize(),
+        winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+        winston.format.printf(({ level, message, timestamp, ...meta }) => {
+            const cleanMeta = { ...meta };
+            delete cleanMeta.service;
+            const metaStr = Object.keys(cleanMeta).length ? ` ${JSON.stringify(cleanMeta)}` : '';
+            return `[${timestamp}] ${level}: ${message}${metaStr}`;
+        })
+    )
+}));
 
 /**
  * Middleware de Express para logging de requests

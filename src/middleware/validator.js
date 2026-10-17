@@ -6,20 +6,23 @@ import { logger } from './logger.js';
  * Verifica que los requests provengan de Twilio usando la firma
  */
 export function twilioWebhookValidator(req, res, next) {
-    // En desarrollo, permitir requests sin validación si está configurado
-    if (process.env.NODE_ENV === 'development' && process.env.SKIP_TWILIO_VALIDATION === 'true') {
-        logger.warn('Skipping Twilio webhook validation in development mode');
+    // En desarrollo o pruebas, permitir requests sin validación si está configurado
+    if (process.env.SKIP_TWILIO_VALIDATION === 'true') {
+        logger.warn('⚠️ [Twilio Webhook] SKIP_TWILIO_VALIDATION activo: Omitiendo validación de firma');
         return next();
     }
 
     const signature = req.headers['x-twilio-signature'];
 
     if (!signature) {
-        logger.error('Missing Twilio signature header');
+        logger.error('❌ [Twilio Webhook] Falta header X-Twilio-Signature en el request', {
+            url: req.originalUrl,
+            ip: req.ip
+        });
         return res.status(403).json({ error: 'Missing signature' });
     }
 
-    // Construir URL completa del webhook
+    // Construir URL completa del webhook considerando proxy inverso (Railway)
     const protocol = req.headers['x-forwarded-proto'] || req.protocol;
     const host = req.headers['x-forwarded-host'] || req.get('host');
     const url = `${protocol}://${host}${req.originalUrl}`;
@@ -27,9 +30,14 @@ export function twilioWebhookValidator(req, res, next) {
     const isValid = validateTwilioSignature(signature, url, req.body);
 
     if (!isValid) {
-        logger.error('Invalid Twilio signature', { url, signature });
+        logger.error('❌ [Twilio Webhook] Firma de Twilio inválida', {
+            urlEvaluada: url,
+            signatureReceived: signature,
+            hasAuthToken: !!process.env.TWILIO_AUTH_TOKEN
+        });
         return res.status(403).json({ error: 'Invalid request signature' });
     }
 
+    logger.info('✅ [Twilio Webhook] Firma de Twilio verificada correctamente');
     next();
 }

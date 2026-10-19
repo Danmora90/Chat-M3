@@ -37,7 +37,7 @@ router.get('/', catchAsync(async (req, res) => {
  * Crea una nueva plantilla en Twilio y la envía a aprobación a Meta/WhatsApp
  */
 router.post('/', catchAsync(async (req, res) => {
-    const { friendlyName, category, language, body, variables } = req.body;
+    const { friendlyName, category, language, body, variables, variableSamples } = req.body;
 
     if (!friendlyName || !body) {
         return res.status(400).json({ error: 'friendlyName y body son requeridos' });
@@ -54,7 +54,9 @@ router.post('/', catchAsync(async (req, res) => {
         adminId: req.user.id,
         friendlyName,
         category,
-        language
+        language,
+        detectedVars,
+        hasCustomSamples: !!variableSamples
     });
 
     const result = await twilioContentService.createAndSubmitTemplate({
@@ -62,7 +64,8 @@ router.post('/', catchAsync(async (req, res) => {
         category: category || 'UTILITY',
         language: language || 'es',
         body,
-        variables: detectedVars
+        variables: detectedVars,
+        variableSamples: variableSamples || {}
     });
 
     res.status(201).json({

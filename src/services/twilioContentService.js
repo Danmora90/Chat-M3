@@ -31,8 +31,9 @@ export const twilioContentService = {
      * @param {string} params.language - Código ISO, ej: 'es' o 'es_LA'
      * @param {string} params.body - Texto del mensaje (soporta variables {{1}}, {{2}}, etc.)
      * @param {Array<string>} [params.variables] - Lista de variables detectadas, ej: ['1', '2']
+     * @param {Object} [params.variableSamples] - Mapeo de valores de ejemplo reales, ej: { '1': 'Juan', '2': '15 de Noviembre' }
      */
-    async createAndSubmitTemplate({ friendlyName, category = 'UTILITY', language = 'es', body, variables = [] }) {
+    async createAndSubmitTemplate({ friendlyName, category = 'UTILITY', language = 'es', body, variables = [], variableSamples = {} }) {
         try {
             logger.info('TwilioContent: Creating Content resource via Twilio REST API', { friendlyName, category, language });
 
@@ -43,7 +44,14 @@ export const twilioContentService = {
                 .replace(/[^a-z0-9_]/g, '_')
                 .slice(0, 64);
 
-            const variablesMap = variables.reduce((acc, v) => ({ ...acc, [v]: `ejemplo_${v}` }), {});
+            // Mapear cada variable con su valor de ejemplo real ingresado por el usuario o fallback
+            const variablesMap = variables.reduce((acc, v) => {
+                const sample = variableSamples && variableSamples[v] && String(variableSamples[v]).trim();
+                return {
+                    ...acc,
+                    [v]: sample || `ejemplo_${v}`
+                };
+            }, {});
 
             // 1. Crear el Content en Twilio
             const contentPayload = {
@@ -214,6 +222,7 @@ export const twilioContentService = {
                     category: wa.category || 'UTILITY',
                     body: textBody,
                     variables: Object.keys(c.variables || {}),
+                    variable_samples: c.variables || {},
                     status: status,
                     rejection_reason: wa.rejection_reason || null,
                     created_at: c.dateCreated

@@ -2,6 +2,7 @@ import express from 'express';
 import { supabaseAdmin } from '../services/supabase.js';
 import { authMiddleware, requireRole } from '../middleware/authMiddleware.js';
 import { getPromptDetails, saveSystemPrompt, resetSystemPrompt, getPromptHistory } from '../services/promptService.js';
+import { analyzePromptToolGaps } from '../services/promptGapService.js';
 import { scanResidentialProjects, getScoutedProjectsHistory, deleteScoutedProject, searchLocalScoutedProjects, clearAllScoutedProjects, getProjectLeads } from '../services/prospectingService.js';
 import { logger } from '../middleware/logger.js';
 import { catchAsync } from '../utils/errors.js';
@@ -235,6 +236,22 @@ router.get('/prompt/history', catchAsync(async (req, res) => {
     const limit = parseInt(req.query.limit, 10) || 5;
     const history = await getPromptHistory(limit);
     res.json(history);
+}));
+
+/**
+ * POST /api/admin/prompt/analyze-tools
+ * Audita el prompt para identificar si le pide a la IA realizar tareas sin herramientas configuradas
+ */
+router.post('/prompt/analyze-tools', catchAsync(async (req, res) => {
+    const { prompt } = req.body;
+
+    if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
+        return res.status(400).json({ error: 'El contenido del prompt es requerido' });
+    }
+
+    logger.info('Admin: Prompt tool gap analysis requested', { adminId: req.user.id });
+    const analysis = await analyzePromptToolGaps(prompt);
+    res.json(analysis);
 }));
 
 /**

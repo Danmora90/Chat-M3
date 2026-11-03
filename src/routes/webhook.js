@@ -11,6 +11,8 @@ import { twilioWebhookValidator } from '../middleware/validator.js';
 import { logger } from '../middleware/logger.js';
 import { extractPhoneNumber, generateThreadId } from '../utils/session.js';
 import { automationService } from '../services/automationService.js';
+import { adminCopilotService } from '../services/adminCopilotService.js';
+import { delayedResponseService } from '../services/delayedResponseService.js';
 import { catchAsync } from '../utils/errors.js';
 
 const router = express.Router();
@@ -235,6 +237,64 @@ router.post('/whatsapp', twilioWebhookValidator, catchAsync(async (req, res) => 
             MessageSid || null
         );
 
+        // --- VERIFICACIÓN DE ADMINISTRADOR (ADMIN COPILOT) ---
+        const isAdmin = await adminCopilotService.isAuthorizedAdminPhone(phoneNumber);
+        if (isAdmin) {
+            const lowerText = (messageContent || '').trim().toLowerCase();
+
+            // Si el administrador desea probar el bot comercial como un cliente común
+            if (lowerText === 'modo cliente' || lowerText === '#cliente') {
+                await supabaseAdmin.from('system_settings').upsert({
+                    key: `admin_mode_${phoneNumber}`,
+                    value: 'client',
+                    updated_at: new Date().toISOString()
+                });
+                await sendWhatsAppMessage(phoneNumber, '🤖 Modo Cliente activado. A partir de ahora hablarás con el agente comercial Felipe. Escribe "modo admin" cuando desees volver al Copilot.');
+                return res.status(200).send('OK');
+            }
+
+            // Verificar si tiene forzado el modo cliente
+            const { data: modeSetting } = await supabaseAdmin
+                .from('system_settings')
+                .select('value')
+                .eq('key', `admin_mode_${phoneNumber}`)
+                .maybeSingle();
+
+            if (lowerText === 'modo admin' || lowerText === '#admin') {
+                await supabaseAdmin.from('system_settings').upsert({
+                    key: `admin_mode_${phoneNumber}`,
+                    value: 'admin',
+                    updated_at: new Date().toISOString()
+                });
+                await sendWhatsAppMessage(phoneNumber, '🛡️ Modo Admin Copilot activado. ¿Qué tarea deseas ejecutar hoy?');
+                return res.status(200).send('OK');
+            }
+
+            if (modeSetting?.value !== 'client') {
+                logger.info('AdminCopilot: Incoming WhatsApp message from admin, routing to Copilot', { phoneNumber });
+
+                const copilotRes = await adminCopilotService.chat({
+                    sessionId: `admin_wa_${phoneNumber}`,
+                    message: messageContent,
+                    adminContext: {
+                        adminPhone: phoneNumber,
+                        source: 'whatsapp'
+                    }
+                });
+
+                // Enviar respuesta por WhatsApp
+                const twilioRes = await sendWhatsAppMessage(phoneNumber, copilotRes.reply);
+
+                // Guardar mensaje en el chat
+                await saveMessage(chat.id, user.id, 'assistant', copilotRes.reply, {
+                    copilot: true,
+                    executedTools: copilotRes.executedTools
+                }, twilioRes.sid);
+
+                return res.status(200).send('OK');
+            }
+        }
+
         // --- VALIDACIÓN HUMAN HANDOFF ---
         // Si la IA está pausada para este chat, terminamos aquí.
         // Ya se guardó el mensaje del usuario para que el humano lo vea en el panel.
@@ -260,58 +320,16 @@ router.post('/whatsapp', twilioWebhookValidator, catchAsync(async (req, res) => 
             return res.status(200).send('OK');
         }
 
-        // 4. Obtener instancia del agente
-        const agent = await getAgent();
-
-        // 5. Configurar el thread para mantener memoria conversacional
-        const threadId = generateThreadId(chat.id);
-        const config = {
-            configurable: {
-                thread_id: threadId
-            }
-        };
-
-        // --- VERIFICACIÓN DE ESTADO PERSISTENTE ---
-        console.log("-----------------------------------------");
-        console.log("Thread ID:", threadId);
-        console.log("User Input:", messageContent);
-        console.log("-----------------------------------------");
-
-        // 6. Procesar mensaje con el agente
-        // Inyectamos SOLO el mensaje nuevo. El historial completo vive en Postgres (checkpoints).
-        logger.info('Invoking agent graph', { threadId });
-        
-        const result = await agent.invoke(
-            {
-                messages: [{ role: 'user', content: messageContent }],
-                userPhone: phoneNumber,
-                chatId: chat.id,
-                userId: user.id
-            },
-            config
-        );
-
-        // 7. Extraer respuesta del agente
-        const lastMessage = result.messages[result.messages.length - 1];
-        const responseText = lastMessage.content;
-
-        logger.info('Agent response generated', {
-            responseLength: responseText?.length,
-            toolCalls: lastMessage.tool_calls?.length || 0
+        // 4. Programar respuesta con intervalo aleatorio humano (1 a 5 minutos)
+        // Responder inmediatamente con HTTP 200 a Twilio para garantizar que nunca expire el timeout de 15 segundos
+        delayedResponseService.scheduleResponse({
+            chatId: chat.id,
+            userPhone: phoneNumber,
+            userId: user.id,
+            messageContent
         });
 
-        // 8. Enviar respuesta por WhatsApp
-        const twilioResponse = await sendWhatsAppMessage(phoneNumber, responseText);
-
-        logger.info('Response sent to WhatsApp', {
-            to: phoneNumber,
-            twilioSid: twilioResponse.sid
-        });
-
-        // 9. Guardar respuesta del agente en la base de datos con su message_sid
-        await saveMessage(chat.id, user.id, 'assistant', responseText, {}, twilioResponse.sid);
-
-        // 10. Confirmar recepción a Twilio
+        // Confirmar recepción inmediatamente a Twilio
         res.status(200).send('OK');
 
     } catch (error) {

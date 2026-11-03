@@ -16,6 +16,7 @@ import { PostgresSaver } from "../checkpoints/postgresSaver.js";
 import { createOpenAIModel } from "../services/openai.js";
 import { logger } from "../middleware/logger.js";
 import { generateThreadId } from "../utils/session.js";
+import { getActiveDynamicTools } from "../tools/dynamicToolEngine.js";
 
 /**
  * Helper seguro para resolver el tipo de mensaje (instancia LangChain vs Objeto plano)
@@ -41,8 +42,8 @@ function resolveMessageType(message) {
  */
 export async function createAgent() {
     try {
-        // Configurar modelo con herramientas
-        const tools = [
+        // Configurar modelo con herramientas base y dinámicas de la plataforma
+        const staticTools = [
             materialSearchTool,
             webSearchTool,
             updateUserDisplayNameTool,
@@ -53,6 +54,8 @@ export async function createAgent() {
             crmSyncTool,
             buscarProyectoInmobiliarioTool
         ];
+        const dynamicTools = await getActiveDynamicTools();
+        const tools = [...staticTools, ...dynamicTools];
         const model = createOpenAIModel().bindTools(tools);
 
         /**
@@ -189,11 +192,19 @@ let agentInstance = null;
 /**
  * Obtiene la instancia del agente (singleton)
  */
-export async function getAgent() {
-    if (!agentInstance) {
+export async function getAgent(forceRefresh = false) {
+    if (!agentInstance || forceRefresh) {
         agentInstance = await createAgent();
     }
     return agentInstance;
+}
+
+/**
+ * Reinicia la instancia del agente en memoria para forzar recarga de herramientas
+ */
+export function resetAgentInstance() {
+    agentInstance = null;
+    logger.info('Agent instance reset - will reload tools on next execution');
 }
 
 /**

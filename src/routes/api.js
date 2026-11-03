@@ -8,6 +8,7 @@ import { catchAsync } from '../utils/errors.js';
 import { salesService } from '../services/salesService.js';
 import { uploadFile } from '../services/firebase.js';
 import { updateAgentMemory } from '../agent/graph.js';
+import { delayedResponseService } from '../services/delayedResponseService.js';
 import axios from 'axios';
 import multer from 'multer';
 
@@ -541,7 +542,12 @@ router.patch('/chats/:id', authMiddleware, catchAsync(async (req, res) => {
     console.log(`[DEBUG PATCH] Valor is_ai_paused: ${is_ai_paused} (tipo: ${typeof is_ai_paused})`);
 
     const updates = {};
-    if (typeof is_ai_paused === 'boolean') updates.is_ai_paused = is_ai_paused;
+    if (typeof is_ai_paused === 'boolean') {
+        updates.is_ai_paused = is_ai_paused;
+        if (is_ai_paused === true) {
+            delayedResponseService.cancelPendingResponse(id);
+        }
+    }
     if (status) updates.status = status;
 
     console.log(`[DEBUG PATCH] Updates a aplicar:`, JSON.stringify(updates));
@@ -626,6 +632,9 @@ router.post('/chats/:id/messages', authMiddleware, catchAsync(async (req, res) =
             },
             twilioSid
         );
+
+        // Cancelar cualquier respuesta pendiente de la IA para este chat
+        delayedResponseService.cancelPendingResponse(id);
 
         // Sincronizar mensaje del asesor humano en la memoria de LangGraph
         await updateAgentMemory(
@@ -730,6 +739,9 @@ router.post('/chats/:id/attachments', authMiddleware, uploadMiddleware.single('f
             },
             twilioSid
         );
+
+        // Cancelar cualquier respuesta pendiente de la IA para este chat
+        delayedResponseService.cancelPendingResponse(id);
 
         // Construir contexto del archivo adjunto para la memoria del agente
         let attachmentDesc = message ? `${message}\n` : '';

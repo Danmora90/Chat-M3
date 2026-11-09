@@ -4,15 +4,54 @@ import { logger } from '../middleware/logger.js';
 const GRAPH_API_VERSION = 'v21.0';
 const GRAPH_API_BASE = `https://graph.facebook.com/${GRAPH_API_VERSION}`;
 
+let cachedResolvedToken = null;
+let lastResolvedAt = 0;
+
 /**
- * Obtiene el Page Access Token configurado
+ * Obtiene el Page Access Token configurado.
+ * Si el token es de un Usuario del Sistema, resuelve automáticamente el token de la Página MAS.3.
  */
-function getAccessToken() {
-    const token = process.env.META_PAGE_ACCESS_TOKEN;
-    if (!token) {
+async function getAccessToken() {
+    const rawToken = process.env.META_PAGE_ACCESS_TOKEN;
+    if (!rawToken) {
         throw new Error('META_PAGE_ACCESS_TOKEN no está configurado en las variables de entorno.');
     }
-    return token;
+
+    // Cache por 1 hora para evitar llamadas repetitivas
+    if (cachedResolvedToken && (Date.now() - lastResolvedAt < 3600 * 1000)) {
+        return cachedResolvedToken;
+    }
+
+    try {
+        // Intentar ver si es un token de Usuario / Sistema para obtener el token específico de la Página
+        const accountsRes = await axios.get(`${GRAPH_API_BASE}/me/accounts`, {
+            headers: { Authorization: `Bearer ${rawToken}` },
+            timeout: 5000
+        });
+
+        const targetPageId = process.env.META_PAGE_ID || '163693413486965';
+        const pages = accountsRes.data?.data || [];
+        const targetPage = pages.find(p => p.id === targetPageId) || pages[0];
+
+        if (targetPage?.access_token) {
+            logger.info('Auto-resolved Page Access Token from System User', {
+                pageId: targetPage.id,
+                pageName: targetPage.name
+            });
+            cachedResolvedToken = targetPage.access_token;
+            lastResolvedAt = Date.now();
+            return cachedResolvedToken;
+        }
+    } catch (err) {
+        // Si /me/accounts no aplica (por ejemplo si ya es un Page Access Token directo), usar el rawToken
+        cachedResolvedToken = rawToken;
+        lastResolvedAt = Date.now();
+        return rawToken;
+    }
+
+    cachedResolvedToken = rawToken;
+    lastResolvedAt = Date.now();
+    return rawToken;
 }
 
 /**
@@ -23,7 +62,7 @@ function getAccessToken() {
  */
 export async function sendMessengerMessage(recipientId, text) {
     try {
-        const token = getAccessToken();
+        const token = await getAccessToken();
         const url = `${GRAPH_API_BASE}/me/messages`;
 
         const response = await axios.post(
@@ -63,7 +102,7 @@ export async function sendMessengerMessage(recipientId, text) {
  */
 export async function sendInstagramMessage(recipientId, text) {
     try {
-        const token = getAccessToken();
+        const token = await getAccessToken();
         const url = `${GRAPH_API_BASE}/me/messages`;
 
         const response = await axios.post(
@@ -103,7 +142,7 @@ export async function sendInstagramMessage(recipientId, text) {
  */
 export async function replyInstagramComment(commentId, text) {
     try {
-        const token = getAccessToken();
+        const token = await getAccessToken();
         const url = `${GRAPH_API_BASE}/${commentId}/replies`;
 
         const response = await axios.post(
@@ -140,7 +179,7 @@ export async function replyInstagramComment(commentId, text) {
  */
 export async function replyFacebookComment(commentId, text) {
     try {
-        const token = getAccessToken();
+        const token = await getAccessToken();
         const url = `${GRAPH_API_BASE}/${commentId}/comments`;
 
         const response = await axios.post(

@@ -226,7 +226,7 @@ async function handleChangeEvent(change, isInstagramObject, storeId, entryId) {
     // --- CASO 1: Comentarios de Instagram (Reels / Posts) ---
     if (field === 'comments') {
         const commentId = value.id;
-        const text = value.text;
+        const text = value.text || value.message || '';
         const fromUser = value.from;
 
         // Evitar responder comentarios de la propia página/cuenta
@@ -253,7 +253,7 @@ async function handleChangeEvent(change, isInstagramObject, storeId, entryId) {
     // --- CASO 2: Comentarios de Facebook en publicaciones del Feed ---
     if (field === 'feed' && value.item === 'comment' && value.verb === 'add') {
         const commentId = value.comment_id;
-        const text = value.message;
+        const text = value.message || value.text || value.comment || '';
         const fromUser = value.from;
 
         // Evitar responder a los propios comentarios de la página
@@ -282,9 +282,12 @@ async function handleChangeEvent(change, isInstagramObject, storeId, entryId) {
  * Procesa la respuesta de la IA a un comentario público
  */
 async function processCommentReply({ commentId, authorId, authorName, commentText, platform, storeId }) {
+    let chat = null;
+    let user = null;
+
     try {
         // 1. Obtener o crear usuario
-        const user = await getOrCreateMetaUser({
+        user = await getOrCreateMetaUser({
             metaId: authorId,
             platform,
             displayName: authorName,
@@ -292,14 +295,16 @@ async function processCommentReply({ commentId, authorId, authorName, commentTex
         });
 
         // 2. Obtener o crear chat para el seguimiento
-        const chat = await getOrCreateMetaChat(user.id, `${platform}_comment`, storeId);
+        chat = await getOrCreateMetaChat(user.id, `${platform}_comment`, storeId);
+
+        const safeCommentText = (commentText && commentText !== 'undefined') ? commentText : '[Comentario en publicación]';
 
         // 3. Guardar el comentario como mensaje del usuario
         await saveMessage(
             chat.id,
             user.id,
             'user',
-            `[Comentario en publicación]: ${commentText}`,
+            `[Comentario en publicación]: ${safeCommentText}`,
             { comment_id: commentId, platform }
         );
 
@@ -312,7 +317,7 @@ async function processCommentReply({ commentId, authorId, authorName, commentTex
             }
         };
 
-        const promptInstruction = `El usuario @${authorName || 'cliente'} dejó el siguiente comentario público en nuestras redes sociales: "${commentText}". Genera una respuesta breve, profesional, cordial y atractiva para responder su comentario de forma pública (máximo 2-3 frases), invitándolo si es pertinente a escribirnos por mensaje privado o consultar su proyecto.`;
+        const promptInstruction = `El usuario @${authorName || 'cliente'} dejó el siguiente comentario público en nuestras redes sociales: "${safeCommentText}". Genera una respuesta breve, profesional, cordial y atractiva para responder su comentario de forma pública (máximo 2-3 frases), invitándolo si es pertinente a escribirnos por mensaje privado o consultar su proyecto.`;
 
         const result = await agent.invoke(
             {
@@ -327,17 +332,22 @@ async function processCommentReply({ commentId, authorId, authorName, commentTex
         const lastMessage = result.messages[result.messages.length - 1];
         const responseText = lastMessage.content;
 
-        // 5. Guardar la respuesta
-        await saveMessage(chat.id, user.id, 'assistant', responseText, { comment_id: commentId, platform });
-
-        // 6. Publicar la respuesta en el comentario mediante Meta Graph API
+        // 5. Publicar primero en Meta Graph API para validar la entrega real
+        let replyResult = null;
         if (platform === 'instagram') {
-            await replyInstagramComment(commentId, responseText);
+            replyResult = await replyInstagramComment(commentId, responseText);
         } else {
-            await replyFacebookComment(commentId, responseText);
+            replyResult = await replyFacebookComment(commentId, responseText);
         }
 
-        logger.info(`Comment replied successfully on ${platform}`, { commentId });
+        // 6. Guardar la respuesta en la base de datos SOLO si Meta la aceptó
+        await saveMessage(chat.id, user.id, 'assistant', responseText, {
+            comment_id: commentId,
+            reply_id: replyResult?.id || null,
+            platform
+        });
+
+        logger.info(`Comment replied successfully on ${platform}`, { commentId, replyId: replyResult?.id });
 
     } catch (error) {
         logger.error(`Error replying to comment on ${platform}`, {

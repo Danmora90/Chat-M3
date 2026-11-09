@@ -12,7 +12,9 @@
         "dev": "nodemon -r dotenv/config src/server.js",
         "test": "jest",
         "test:watch": "jest --watch",
-        "test:coverage": "jest --coverage"
+        "test:coverage": "jest --coverage",
+        "ig:login": "node -r dotenv/config scripts/ig_login.js",
+        "ig:scrape": "node -r dotenv/config scripts/ig_scraper.js"
     },
     "keywords": [
         "whatsapp",
@@ -24,6 +26,7 @@
     "author": "",
     "license": "MIT",
     "dependencies": {
+        "@google/genai": "^3.0.0",
         "@langchain/core": "^0.3.21",
         "@langchain/langgraph": "^0.0.34",
         "@langchain/openai": "^0.3.15",
@@ -43,6 +46,7 @@
         "jsonwebtoken": "^9.0.3",
         "multer": "^2.0.2",
         "openai": "^6.18.0",
+        "playwright": "^1.65.0",
         "twilio": "^4.20.0",
         "winston": "^3.11.0",
         "zod": "^3.22.4"

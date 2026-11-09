@@ -18,6 +18,7 @@ import templateRoutes from './routes/templates.js';
 import automationsRoutes from './routes/automations.js';
 import toolsRoutes from './routes/tools.js';
 import copilotRoutes from './routes/copilot.js';
+import prospectingRoutes from './routes/prospecting.js';
 import { startAutomationWorker } from './jobs/automationWorker.js';
 import { createRateLimiter } from './middleware/rateLimiter.js';
 import { logger, requestLogger } from './middleware/logger.js';
@@ -78,6 +79,7 @@ app.use('/api/metrics', metricsRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/maschat', maschatRoutes);
+app.use('/api/prospecting', prospectingRoutes);
 app.use('/auth', authRoutes);
 
 // Health check endpoint

@@ -1,5 +1,5 @@
 {
-  "watch": ["src"],
+  "watch": ["src", "scripts"],
   "ext": "js,json",
-  "ignore": ["data/*", "database/*", "*.log", "node_modules/*"]
+  "ignore": ["data/*", "database/*", "*.log", "node_modules/*", ".ig-burner-session/*"]
 }

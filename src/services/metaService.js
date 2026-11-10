@@ -14,7 +14,7 @@ let lastResolvedAt = 0;
  * 3. Si ya es un Page Access Token directo, lo usa tal cual
  */
 export async function getAccessToken() {
-    const rawToken = process.env.META_PAGE_ACCESS_TOKEN;
+    const rawToken = (process.env.META_PAGE_ACCESS_TOKEN || '').trim().replace(/^["']|["']$/g, '');
     if (!rawToken) {
         throw new Error('META_PAGE_ACCESS_TOKEN no está configurado en las variables de entorno.');
     }
@@ -24,7 +24,7 @@ export async function getAccessToken() {
         return cachedResolvedToken;
     }
 
-    const targetPageId = process.env.META_PAGE_ID || '163693413486965';
+    const targetPageId = (process.env.META_PAGE_ID || '163693413486965').trim();
 
     // 1. Método oficial para System User Tokens asignados a la página: /{pageId}?fields=access_token
     try {
@@ -33,7 +33,7 @@ export async function getAccessToken() {
                 fields: 'access_token,name',
                 access_token: rawToken
             },
-            timeout: 5000
+            timeout: 7000
         });
 
         if (pageRes.data?.access_token) {
@@ -41,7 +41,7 @@ export async function getAccessToken() {
                 pageId: targetPageId,
                 name: pageRes.data.name
             });
-            cachedResolvedToken = pageRes.data.access_token;
+            cachedResolvedToken = pageRes.data.access_token.trim();
             lastResolvedAt = Date.now();
             return cachedResolvedToken;
         }
@@ -51,11 +51,37 @@ export async function getAccessToken() {
         });
     }
 
-    // 2. Método para User Tokens personales: /me/accounts
+    // 2. Método alternativo para System User Tokens de Business Manager: /{business_id}/owned_pages
+    const businessId = (process.env.META_BUSINESS_ID || '538532327414599').trim();
+    try {
+        const bizRes = await axios.get(`${GRAPH_API_BASE}/${businessId}/owned_pages`, {
+            params: {
+                fields: 'access_token,name,id',
+                access_token: rawToken
+            },
+            timeout: 7000
+        });
+
+        const pages = bizRes.data?.data || [];
+        const match = pages.find(p => p.id === targetPageId) || pages[0];
+        if (match?.access_token) {
+            logger.info('Auto-resolved Page Access Token from /{business_id}/owned_pages', {
+                pageId: match.id,
+                name: match.name
+            });
+            cachedResolvedToken = match.access_token.trim();
+            lastResolvedAt = Date.now();
+            return cachedResolvedToken;
+        }
+    } catch (bizErr) {
+        // Silencioso
+    }
+
+    // 3. Método para User Tokens personales: /me/accounts
     try {
         const accountsRes = await axios.get(`${GRAPH_API_BASE}/me/accounts`, {
             params: { access_token: rawToken },
-            timeout: 5000
+            timeout: 7000
         });
 
         const pages = accountsRes.data?.data || [];
@@ -66,7 +92,7 @@ export async function getAccessToken() {
                 pageId: targetPage.id,
                 name: targetPage.name
             });
-            cachedResolvedToken = targetPage.access_token;
+            cachedResolvedToken = targetPage.access_token.trim();
             lastResolvedAt = Date.now();
             return cachedResolvedToken;
         }
@@ -74,7 +100,7 @@ export async function getAccessToken() {
         // Silencioso
     }
 
-    // 3. Fallback: Usar rawToken (asumiendo que ya es un Page Access Token directo)
+    // 4. Fallback: Usar rawToken (asumiendo que ya es un Page Access Token directo)
     cachedResolvedToken = rawToken;
     lastResolvedAt = Date.now();
     return rawToken;
@@ -201,6 +227,7 @@ export async function replyInstagramComment(commentId, text) {
             url,
             { message: text },
             {
+                params: { access_token: token },
                 headers: {
                     'Content-Type': 'application/json',
                     Authorization: `Bearer ${token}`
@@ -238,6 +265,7 @@ export async function replyFacebookComment(commentId, text) {
             url,
             { message: text },
             {
+                params: { access_token: token },
                 headers: {
                     'Content-Type': 'application/json',
                     Authorization: `Bearer ${token}`

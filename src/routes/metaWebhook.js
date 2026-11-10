@@ -1,4 +1,5 @@
 import express from 'express';
+import axios from 'axios';
 import { logger } from '../middleware/logger.js';
 import { catchAsync } from '../utils/errors.js';
 import { getAgent, updateAgentMemory } from '../agent/graph.js';
@@ -13,11 +14,71 @@ import {
     sendInstagramMessage, 
     replyInstagramComment, 
     replyFacebookComment,
-    fetchCommentDetails 
+    fetchCommentDetails,
+    getAccessToken 
 } from '../services/metaService.js';
 import { generateThreadId } from '../utils/session.js';
 
 const router = express.Router();
+
+/**
+ * Endpoint de diagnóstico en vivo para verificar conexión real con Meta
+ */
+router.get('/debug-live', catchAsync(async (req, res) => {
+    const rawToken = (process.env.META_PAGE_ACCESS_TOKEN || '').trim().replace(/^["']|["']$/g, '');
+    const pageId = (process.env.META_PAGE_ID || '163693413486965').trim();
+    const commentId = req.query.comment_id || '122245599986092886_1144765577947549';
+
+    const results = {
+        token_preview: rawToken ? `${rawToken.slice(0, 10)}...${rawToken.slice(-6)}` : 'MISSING',
+        page_id: pageId
+    };
+
+    // 1. Debug token vía debug_token
+    try {
+        const d = await axios.get(`https://graph.facebook.com/debug_token`, {
+            params: { input_token: rawToken, access_token: rawToken },
+            timeout: 7000
+        });
+        results.debug_token = d.data?.data;
+    } catch (e) {
+        results.debug_token_error = e.response?.data || e.message;
+    }
+
+    // 2. Resolver token mediante getAccessToken
+    let resolved = null;
+    try {
+        resolved = await getAccessToken();
+        results.resolved_token_preview = resolved ? `${resolved.slice(0, 10)}...${resolved.slice(-6)}` : 'NULL';
+    } catch (e) {
+        results.resolved_token_error = e.message;
+    }
+
+    const tokenToUse = resolved || rawToken;
+
+    // 3. Probar lectura del comentario
+    try {
+        const c = await axios.get(`https://graph.facebook.com/v21.0/${commentId}`, {
+            params: { fields: 'message,from,created_time', access_token: tokenToUse },
+            timeout: 7000
+        });
+        results.comment_read = c.data;
+    } catch (e) {
+        results.comment_read_error = e.response?.data || e.message;
+    }
+
+    // 4. Probar envío de respuesta si ?test_reply=true
+    if (req.query.test_reply === 'true') {
+        try {
+            const r = await replyFacebookComment(commentId, 'Hola Jose Daniel! Respuesta automática verificada desde el servidor.');
+            results.reply_post = r;
+        } catch (e) {
+            results.reply_post_error = e.response?.data || e.message;
+        }
+    }
+
+    res.json(results);
+}));
 
 /**
  * Endpoint de verificación para Meta (Facebook Messenger e Instagram)

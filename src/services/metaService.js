@@ -9,9 +9,11 @@ let lastResolvedAt = 0;
 
 /**
  * Obtiene el Page Access Token configurado.
- * Si el token es de un Usuario del Sistema, resuelve automáticamente el token de la Página MAS.3.
+ * 1. Si es un System User Token, obtiene el Page Access Token de MAS.3 vía /{pageId}?fields=access_token
+ * 2. Si es un User Token estándar, lo busca vía /me/accounts
+ * 3. Si ya es un Page Access Token directo, lo usa tal cual
  */
-async function getAccessToken() {
+export async function getAccessToken() {
     const rawToken = process.env.META_PAGE_ACCESS_TOKEN;
     if (!rawToken) {
         throw new Error('META_PAGE_ACCESS_TOKEN no está configurado en las variables de entorno.');
@@ -22,36 +24,86 @@ async function getAccessToken() {
         return cachedResolvedToken;
     }
 
+    const targetPageId = process.env.META_PAGE_ID || '163693413486965';
+
+    // 1. Método oficial para System User Tokens asignados a la página: /{pageId}?fields=access_token
     try {
-        // Intentar ver si es un token de Usuario / Sistema para obtener el token específico de la Página
-        const accountsRes = await axios.get(`${GRAPH_API_BASE}/me/accounts`, {
-            headers: { Authorization: `Bearer ${rawToken}` },
+        const pageRes = await axios.get(`${GRAPH_API_BASE}/${targetPageId}`, {
+            params: {
+                fields: 'access_token,name',
+                access_token: rawToken
+            },
             timeout: 5000
         });
 
-        const targetPageId = process.env.META_PAGE_ID || '163693413486965';
+        if (pageRes.data?.access_token) {
+            logger.info('Auto-resolved Page Access Token from /{pageId}', {
+                pageId: targetPageId,
+                name: pageRes.data.name
+            });
+            cachedResolvedToken = pageRes.data.access_token;
+            lastResolvedAt = Date.now();
+            return cachedResolvedToken;
+        }
+    } catch (pageErr) {
+        logger.warn('Direct /{pageId} token resolution not applicable or failed', {
+            error: pageErr.response?.data?.error?.message || pageErr.message
+        });
+    }
+
+    // 2. Método para User Tokens personales: /me/accounts
+    try {
+        const accountsRes = await axios.get(`${GRAPH_API_BASE}/me/accounts`, {
+            params: { access_token: rawToken },
+            timeout: 5000
+        });
+
         const pages = accountsRes.data?.data || [];
         const targetPage = pages.find(p => p.id === targetPageId) || pages[0];
 
         if (targetPage?.access_token) {
-            logger.info('Auto-resolved Page Access Token from System User', {
+            logger.info('Auto-resolved Page Access Token from /me/accounts', {
                 pageId: targetPage.id,
-                pageName: targetPage.name
+                name: targetPage.name
             });
             cachedResolvedToken = targetPage.access_token;
             lastResolvedAt = Date.now();
             return cachedResolvedToken;
         }
     } catch (err) {
-        // Si /me/accounts no aplica (por ejemplo si ya es un Page Access Token directo), usar el rawToken
-        cachedResolvedToken = rawToken;
-        lastResolvedAt = Date.now();
-        return rawToken;
+        // Silencioso
     }
 
+    // 3. Fallback: Usar rawToken (asumiendo que ya es un Page Access Token directo)
     cachedResolvedToken = rawToken;
     lastResolvedAt = Date.now();
     return rawToken;
+}
+
+/**
+ * Consulta los detalles de un comentario público directamente en Meta Graph API
+ * Útil cuando el webhook de Facebook/Instagram no incluye el texto (videos, reels, anuncios)
+ * @param {string} commentId - ID del comentario
+ * @returns {Promise<Object|null>} Datos del comentario con campo message
+ */
+export async function fetchCommentDetails(commentId) {
+    try {
+        const token = await getAccessToken();
+        const response = await axios.get(`${GRAPH_API_BASE}/${commentId}`, {
+            params: {
+                fields: 'message,from,created_time',
+                access_token: token
+            },
+            timeout: 5000
+        });
+        return response.data;
+    } catch (err) {
+        logger.warn('Could not fetch comment details from Graph API', {
+            commentId,
+            error: err.response?.data?.error?.message || err.message
+        });
+        return null;
+    }
 }
 
 /**

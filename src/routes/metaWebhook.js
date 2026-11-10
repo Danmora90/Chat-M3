@@ -12,7 +12,8 @@ import {
     sendMessengerMessage, 
     sendInstagramMessage, 
     replyInstagramComment, 
-    replyFacebookComment 
+    replyFacebookComment,
+    fetchCommentDetails 
 } from '../services/metaService.js';
 import { generateThreadId } from '../utils/session.js';
 
@@ -253,7 +254,7 @@ async function handleChangeEvent(change, isInstagramObject, storeId, entryId) {
     // --- CASO 2: Comentarios de Facebook en publicaciones del Feed ---
     if (field === 'feed' && value.item === 'comment' && value.verb === 'add') {
         const commentId = value.comment_id;
-        const text = value.message || value.text || value.comment || '';
+        let text = value.message || value.text || value.comment || '';
         const fromUser = value.from;
 
         // Evitar responder a los propios comentarios de la página
@@ -261,16 +262,26 @@ async function handleChangeEvent(change, isInstagramObject, storeId, entryId) {
             return;
         }
 
+        // Si el webhook de Facebook no trajo el texto del mensaje (común en videos, reels o posts protegidos),
+        // consultamos los detalles directamente a la Graph API antes de llamar a la IA
+        if (!text || text.trim() === '') {
+            logger.info('Facebook webhook omitted comment text, fetching via Graph API...', { commentId });
+            const details = await fetchCommentDetails(commentId);
+            if (details?.message) {
+                text = details.message;
+            }
+        }
+
         logger.info('Received Facebook comment', {
             commentId,
-            from: fromUser.name,
+            from: fromUser?.name,
             text
         });
 
         await processCommentReply({
             commentId,
-            authorId: fromUser.id,
-            authorName: fromUser.name,
+            authorId: fromUser?.id,
+            authorName: fromUser?.name,
             commentText: text,
             platform: 'facebook',
             storeId
@@ -297,14 +308,20 @@ async function processCommentReply({ commentId, authorId, authorName, commentTex
         // 2. Obtener o crear chat para el seguimiento
         chat = await getOrCreateMetaChat(user.id, `${platform}_comment`, storeId);
 
-        const safeCommentText = (commentText && commentText !== 'undefined') ? commentText : '[Comentario en publicación]';
+        const cleanText = (commentText && commentText.trim() !== '' && commentText !== 'undefined' && commentText !== '[Comentario en publicación]') 
+            ? commentText.trim() 
+            : null;
+
+        const displayContent = cleanText 
+            ? `[Comentario en publicación]: ${cleanText}` 
+            : '[Comentario en publicación]';
 
         // 3. Guardar el comentario como mensaje del usuario
         await saveMessage(
             chat.id,
             user.id,
             'user',
-            `[Comentario en publicación]: ${safeCommentText}`,
+            displayContent,
             { comment_id: commentId, platform }
         );
 
@@ -317,7 +334,9 @@ async function processCommentReply({ commentId, authorId, authorName, commentTex
             }
         };
 
-        const promptInstruction = `El usuario @${authorName || 'cliente'} dejó el siguiente comentario público en nuestras redes sociales: "${safeCommentText}". Genera una respuesta breve, profesional, cordial y atractiva para responder su comentario de forma pública (máximo 2-3 frases), invitándolo si es pertinente a escribirnos por mensaje privado o consultar su proyecto.`;
+        const promptInstruction = cleanText 
+            ? `El usuario @${authorName || 'cliente'} dejó el siguiente comentario público en nuestras redes sociales: "${cleanText}". Genera una respuesta breve, profesional, cordial y atractiva para responder su comentario de forma pública (máximo 2-3 frases), invitándolo si es pertinente a escribirnos por mensaje privado o consultar su proyecto.`
+            : `El usuario @${authorName || 'cliente'} interactuó con nuestra publicación en redes sociales. Genera un saludo cordial y breve (máximo 2 frases) agradeciendo su interés e invitándolo a consultarnos por mensaje privado sobre sus proyectos.`;
 
         const result = await agent.invoke(
             {

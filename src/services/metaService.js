@@ -110,22 +110,35 @@ export async function getAccessToken() {
  * Consulta los detalles de un comentario público directamente en Meta Graph API
  * Útil cuando el webhook de Facebook/Instagram no incluye el texto (videos, reels, anuncios)
  * @param {string} commentId - ID del comentario
- * @returns {Promise<Object|null>} Datos del comentario con campo message
+ * @param {string} [platform='facebook'] - Plataforma ('facebook' o 'instagram')
+ * @returns {Promise<Object|null>} Datos del comentario con campos normalizados
  */
-export async function fetchCommentDetails(commentId) {
+export async function fetchCommentDetails(commentId, platform = 'facebook') {
     try {
         const token = await getAccessToken();
+        const fields = platform === 'instagram'
+            ? 'text,from,timestamp,username'
+            : 'message,from,created_time';
+
         const response = await axios.get(`${GRAPH_API_BASE}/${commentId}`, {
             params: {
-                fields: 'message,from,created_time',
+                fields,
                 access_token: token
             },
             timeout: 5000
         });
-        return response.data;
+
+        const data = response.data || {};
+        return {
+            message: data.text || data.message || '',
+            text: data.text || data.message || '',
+            from: data.from,
+            raw: data
+        };
     } catch (err) {
         logger.warn('Could not fetch comment details from Graph API', {
             commentId,
+            platform,
             error: err.response?.data?.error?.message || err.message
         });
         return null;
@@ -225,7 +238,7 @@ export async function replyInstagramComment(commentId, text) {
 
         const response = await axios.post(
             url,
-            { message: text },
+            { message: text, access_token: token },
             {
                 params: { access_token: token },
                 headers: {

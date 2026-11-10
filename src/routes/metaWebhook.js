@@ -27,11 +27,14 @@ const router = express.Router();
 router.get('/debug-live', catchAsync(async (req, res) => {
     const rawToken = (process.env.META_PAGE_ACCESS_TOKEN || '').trim().replace(/^["']|["']$/g, '');
     const pageId = (process.env.META_PAGE_ID || '163693413486965').trim();
-    const commentId = req.query.comment_id || '122245599986092886_1144765577947549';
+    const defaultCommentId = '122245599986092886_1144765577947549';
+    const commentId = req.query.comment_id || defaultCommentId;
+    const platform = req.query.platform || ((commentId !== defaultCommentId && commentId.length <= 18) ? 'instagram' : 'facebook');
 
     const results = {
         token_preview: rawToken ? `${rawToken.slice(0, 10)}...${rawToken.slice(-6)}` : 'MISSING',
-        page_id: pageId
+        page_id: pageId,
+        platform_tested: platform
     };
 
     // 1. Debug token vía debug_token
@@ -56,10 +59,13 @@ router.get('/debug-live', catchAsync(async (req, res) => {
 
     const tokenToUse = resolved || rawToken;
 
-    // 3. Probar lectura del comentario
+    // 3. Probar lectura del comentario con los campos correspondientes a la plataforma
     try {
+        const fields = platform === 'instagram' 
+            ? 'text,from,timestamp,username' 
+            : 'message,from,created_time';
         const c = await axios.get(`https://graph.facebook.com/v21.0/${commentId}`, {
-            params: { fields: 'message,from,created_time', access_token: tokenToUse },
+            params: { fields, access_token: tokenToUse },
             timeout: 7000
         });
         results.comment_read = c.data;
@@ -70,8 +76,13 @@ router.get('/debug-live', catchAsync(async (req, res) => {
     // 4. Probar envío de respuesta si ?test_reply=true
     if (req.query.test_reply === 'true') {
         try {
-            const r = await replyFacebookComment(commentId, 'Hola Jose Daniel! Respuesta automática verificada desde el servidor.');
-            results.reply_post = r;
+            if (platform === 'instagram') {
+                const r = await replyInstagramComment(commentId, 'Hola! Respuesta automática verificada de Instagram desde el servidor.');
+                results.reply_post = r;
+            } else {
+                const r = await replyFacebookComment(commentId, 'Hola Jose Daniel! Respuesta automática verificada desde el servidor.');
+                results.reply_post = r;
+            }
         } catch (e) {
             results.reply_post_error = e.response?.data || e.message;
         }
@@ -288,12 +299,22 @@ async function handleChangeEvent(change, isInstagramObject, storeId, entryId) {
     // --- CASO 1: Comentarios de Instagram (Reels / Posts) ---
     if (field === 'comments') {
         const commentId = value.id;
-        const text = value.text || value.message || '';
+        let text = value.text || value.message || '';
         const fromUser = value.from;
 
         // Evitar responder comentarios de la propia página/cuenta
-        if (!fromUser || fromUser.id === entryId) {
+        if (!fromUser || fromUser.id === entryId || fromUser.username?.toLowerCase() === 'mas.3arquitectura') {
             return;
+        }
+
+        // Si el webhook de Instagram no trajo el texto del mensaje (común en ciertos formatos de Reels/anuncios),
+        // consultamos los detalles directamente a la Graph API antes de llamar a la IA
+        if (!text || text.trim() === '') {
+            logger.info('Instagram webhook omitted comment text, fetching via Graph API...', { commentId });
+            const details = await fetchCommentDetails(commentId, 'instagram');
+            if (details?.text) {
+                text = details.text;
+            }
         }
 
         logger.info('Received Instagram comment', {

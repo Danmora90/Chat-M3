@@ -351,12 +351,13 @@ export async function getChatHistory(chatId, limit = 50, before = null) {
                         }
                     }
 
-                    // Fallback: proxy autenticado
+                    // Fallback: proxy autenticado para Twilio, o directo para CDNs públicas
                     if (originalUrl) {
+                        const isDirect = !originalUrl.includes('api.twilio.com');
                         pushAttachment({
-                            url: buildProxyUrl(originalUrl),
+                            url: isDirect ? originalUrl : buildProxyUrl(originalUrl),
                             contentType,
-                            source: 'proxy',
+                            source: isDirect ? 'direct' : 'proxy',
                             storagePath,
                             originalUrl
                         });
@@ -374,15 +375,23 @@ export async function getChatHistory(chatId, limit = 50, before = null) {
                 } catch (signedError) {
                     console.error('Error generating signed URL:', signedError);
                     if (originalUrl) {
-                        pushAttachment({ url: buildProxyUrl(originalUrl), contentType, source: 'proxy', storagePath, originalUrl });
+                        const isDirect = !originalUrl.includes('api.twilio.com');
+                        pushAttachment({
+                            url: isDirect ? originalUrl : buildProxyUrl(originalUrl),
+                            contentType,
+                            source: isDirect ? 'direct' : 'proxy',
+                            storagePath,
+                            originalUrl
+                        });
                     }
                 }
             } else if (msg.metadata?.media_url) {
-                // Compatibilidad: sin storage, usar proxy (mejor que Twilio URL directa)
+                // Compatibilidad: sin storage, usar proxy si es de Twilio o directo si es CDN pública
+                const isDirect = !msg.metadata.media_url.includes('api.twilio.com');
                 pushAttachment({
-                    url: buildProxyUrl(msg.metadata.media_url),
+                    url: isDirect ? msg.metadata.media_url : buildProxyUrl(msg.metadata.media_url),
                     contentType: msg.metadata.content_type,
-                    source: 'proxy',
+                    source: isDirect ? 'direct' : 'proxy',
                     originalUrl: msg.metadata.media_url
                 });
             }

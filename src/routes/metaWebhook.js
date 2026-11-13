@@ -15,6 +15,7 @@ import {
     replyInstagramComment, 
     replyFacebookComment,
     fetchCommentDetails,
+    fetchPostMediaDetails,
     getAccessToken 
 } from '../services/metaService.js';
 import { generateThreadId } from '../utils/session.js';
@@ -213,12 +214,30 @@ async function handleDirectMessage(event, isInstagramObject, storeId, entryId) {
         }
 
         // 4. Guardar mensaje del usuario
+        const messageMetadata = { platform, meta_mid: messageMid };
+        if (Array.isArray(message.attachments) && message.attachments.length > 0) {
+            const firstAtt = message.attachments[0];
+            const attUrl = firstAtt.payload?.url;
+            if (attUrl) {
+                messageMetadata.media_url = attUrl;
+                messageMetadata.content_type = firstAtt.type === 'video' ? 'video/mp4' : 'image/jpeg';
+                messageMetadata.attachments = [{
+                    url: attUrl,
+                    type: firstAtt.type || 'image',
+                    mime: firstAtt.type === 'video' ? 'video/mp4' : 'image/jpeg',
+                    content_type: firstAtt.type === 'video' ? 'video/mp4' : 'image/jpeg',
+                    original_url: attUrl,
+                    storage_provider: 'meta'
+                }];
+            }
+        }
+
         await saveMessage(
             chat.id,
             user.id,
             'user',
             contentToProcess,
-            { platform, meta_mid: messageMid },
+            messageMetadata,
             messageMid || null
         );
 
@@ -301,30 +320,36 @@ async function handleChangeEvent(change, isInstagramObject, storeId, entryId) {
         const commentId = value.id;
         let text = value.text || value.message || '';
         const fromUser = value.from;
+        let mediaId = value.media?.id || null;
 
         // Evitar responder comentarios de la propia página/cuenta
         if (!fromUser || fromUser.id === entryId || fromUser.username?.toLowerCase() === 'mas.3arquitectura') {
             return;
         }
 
-        // Si el webhook de Instagram no trajo el texto del mensaje (común en ciertos formatos de Reels/anuncios),
+        // Si el webhook de Instagram no trajo el texto del mensaje o el mediaId,
         // consultamos los detalles directamente a la Graph API antes de llamar a la IA
-        if (!text || text.trim() === '') {
-            logger.info('Instagram webhook omitted comment text, fetching via Graph API...', { commentId });
+        if (!text || text.trim() === '' || !mediaId) {
+            logger.info('Instagram webhook missing comment text or mediaId, fetching via Graph API...', { commentId, hasText: !!text, hasMediaId: !!mediaId });
             const details = await fetchCommentDetails(commentId, 'instagram');
-            if (details?.text) {
+            if (details?.text && (!text || text.trim() === '')) {
                 text = details.text;
+            }
+            if (details?.mediaId && !mediaId) {
+                mediaId = details.mediaId;
             }
         }
 
         logger.info('Received Instagram comment', {
             commentId,
+            mediaId,
             from: fromUser.username,
             text
         });
 
         await processCommentReply({
             commentId,
+            mediaId,
             authorId: fromUser.id,
             authorName: fromUser.username,
             commentText: text,
@@ -338,6 +363,7 @@ async function handleChangeEvent(change, isInstagramObject, storeId, entryId) {
         const commentId = value.comment_id;
         let text = value.message || value.text || value.comment || '';
         const fromUser = value.from;
+        const mediaId = value.post_id || value.parent_id || null;
 
         // Evitar responder a los propios comentarios de la página
         if (!fromUser || fromUser.id === entryId) {
@@ -356,12 +382,14 @@ async function handleChangeEvent(change, isInstagramObject, storeId, entryId) {
 
         logger.info('Received Facebook comment', {
             commentId,
+            mediaId,
             from: fromUser?.name,
             text
         });
 
         await processCommentReply({
             commentId,
+            mediaId,
             authorId: fromUser?.id,
             authorName: fromUser?.name,
             commentText: text,
@@ -374,7 +402,7 @@ async function handleChangeEvent(change, isInstagramObject, storeId, entryId) {
 /**
  * Procesa la respuesta de la IA a un comentario público
  */
-async function processCommentReply({ commentId, authorId, authorName, commentText, platform, storeId }) {
+async function processCommentReply({ commentId, mediaId, authorId, authorName, commentText, platform, storeId }) {
     let chat = null;
     let user = null;
 
@@ -390,24 +418,76 @@ async function processCommentReply({ commentId, authorId, authorName, commentTex
         // 2. Obtener o crear chat para el seguimiento
         chat = await getOrCreateMetaChat(user.id, `${platform}_comment`, storeId);
 
+        // 3. Consultar multimedia de la publicación o Reel si mediaId está disponible
+        let mediaDetails = null;
+        if (mediaId) {
+            try {
+                mediaDetails = await fetchPostMediaDetails(mediaId, platform);
+            } catch (mediaErr) {
+                logger.warn('Failed to fetch post media details for comment', { mediaId, platform, error: mediaErr.message });
+            }
+        }
+
         const cleanText = (commentText && commentText.trim() !== '' && commentText !== 'undefined' && commentText !== '[Comentario en publicación]') 
             ? commentText.trim() 
             : null;
 
-        const displayContent = cleanText 
-            ? `[Comentario en publicación]: ${cleanText}` 
-            : '[Comentario en publicación]';
+        // Guardar el texto directo sin prefijo, o indicador descriptivo si no hubo texto
+        const displayContent = cleanText || '[Comentario en publicación]';
 
-        // 3. Guardar el comentario como mensaje del usuario
+        // Estructurar metadatos y adjuntos del mensaje para que el CRM renderice la imagen/miniatura
+        const messageMetadata = {
+            comment_id: commentId,
+            platform,
+            post_id: mediaId || null,
+            post_url: mediaDetails?.permalink || null,
+            post_caption: mediaDetails?.caption || null
+        };
+
+        if (mediaDetails?.mediaUrl) {
+            messageMetadata.media_url = mediaDetails.mediaUrl;
+            messageMetadata.content_type = mediaDetails.mediaType === 'VIDEO' ? 'video/mp4' : 'image/jpeg';
+            messageMetadata.attachments = [{
+                url: mediaDetails.mediaUrl,
+                type: mediaDetails.mediaType === 'VIDEO' ? 'video' : 'image',
+                mime: mediaDetails.mediaType === 'VIDEO' ? 'video/mp4' : 'image/jpeg',
+                content_type: mediaDetails.mediaType === 'VIDEO' ? 'video/mp4' : 'image/jpeg',
+                original_url: mediaDetails.mediaUrl,
+                storage_provider: 'meta'
+            }];
+        }
+
+        // 4. Guardar el comentario como mensaje del usuario en la base de datos
         await saveMessage(
             chat.id,
             user.id,
             'user',
             displayContent,
-            { comment_id: commentId, platform }
+            messageMetadata
         );
 
-        // 4. Invocar el agente con contexto de que es un comentario público
+        // 5. Verificar si el chat está pausado por humano
+        if (chat.is_ai_paused) {
+            logger.info('Comment chat is in Human Handoff mode (AI paused). Skipping automated reply.', {
+                chatId: chat.id,
+                platform
+            });
+
+            await updateAgentMemory(
+                chat.id,
+                {
+                    role: 'user',
+                    content: displayContent
+                },
+                {
+                    userId: user.id
+                }
+            );
+
+            return;
+        }
+
+        // 6. Invocar el agente con contexto enriquecido de la publicación
         const agent = await getAgent();
         const threadId = generateThreadId(chat.id);
         const config = {
@@ -416,9 +496,13 @@ async function processCommentReply({ commentId, authorId, authorName, commentTex
             }
         };
 
+        const postContext = mediaDetails?.caption 
+            ? ` en nuestra publicación/Reel sobre: "${mediaDetails.caption}"` 
+            : '';
+
         const promptInstruction = cleanText 
-            ? `El usuario @${authorName || 'cliente'} dejó el siguiente comentario público en nuestras redes sociales: "${cleanText}". Genera una respuesta breve, profesional, cordial y atractiva para responder su comentario de forma pública (máximo 2-3 frases), invitándolo si es pertinente a escribirnos por mensaje privado o consultar su proyecto.`
-            : `El usuario @${authorName || 'cliente'} interactuó con nuestra publicación en redes sociales. Genera un saludo cordial y breve (máximo 2 frases) agradeciendo su interés e invitándolo a consultarnos por mensaje privado sobre sus proyectos.`;
+            ? `El usuario @${authorName || 'cliente'} dejó el siguiente comentario público${postContext}: "${cleanText}". Genera una respuesta breve, profesional, cordial y atractiva para responder su comentario de forma pública (máximo 2-3 frases), teniendo en cuenta el contexto de la publicación e invitándolo si es pertinente a escribirnos por mensaje privado o consultar su proyecto.`
+            : `El usuario @${authorName || 'cliente'} interactuó con nuestra publicación/Reel${postContext}. Genera un saludo cordial y breve (máximo 2 frases) agradeciendo su interés e invitándolo a consultarnos por mensaje privado sobre sus proyectos.`;
 
         const result = await agent.invoke(
             {
@@ -433,7 +517,7 @@ async function processCommentReply({ commentId, authorId, authorName, commentTex
         const lastMessage = result.messages[result.messages.length - 1];
         const responseText = lastMessage.content;
 
-        // 5. Publicar primero en Meta Graph API para validar la entrega real
+        // 7. Publicar primero en Meta Graph API para validar la entrega real
         let replyResult = null;
         if (platform === 'instagram') {
             replyResult = await replyInstagramComment(commentId, responseText);
@@ -441,7 +525,7 @@ async function processCommentReply({ commentId, authorId, authorName, commentTex
             replyResult = await replyFacebookComment(commentId, responseText);
         }
 
-        // 6. Guardar la respuesta en la base de datos SOLO si Meta la aceptó
+        // 8. Guardar la respuesta en la base de datos SOLO si Meta la aceptó
         await saveMessage(chat.id, user.id, 'assistant', responseText, {
             comment_id: commentId,
             reply_id: replyResult?.id || null,

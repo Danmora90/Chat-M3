@@ -117,7 +117,7 @@ export async function fetchCommentDetails(commentId, platform = 'facebook') {
     try {
         const token = await getAccessToken();
         const fields = platform === 'instagram'
-            ? 'text,from,timestamp,username'
+            ? 'text,from,timestamp,username,media{id}'
             : 'message,from,created_time';
 
         const response = await axios.get(`${GRAPH_API_BASE}/${commentId}`, {
@@ -133,11 +133,72 @@ export async function fetchCommentDetails(commentId, platform = 'facebook') {
             message: data.text || data.message || '',
             text: data.text || data.message || '',
             from: data.from,
+            mediaId: data.media?.id || null,
             raw: data
         };
     } catch (err) {
         logger.warn('Could not fetch comment details from Graph API', {
             commentId,
+            platform,
+            error: err.response?.data?.error?.message || err.message
+        });
+        return null;
+    }
+}
+
+/**
+ * Consulta la información y multimedia de una publicación o Reel de Instagram o Facebook
+ * @param {string} mediaOrPostId - ID del medio (Instagram) o de la publicación (Facebook)
+ * @param {string} [platform='instagram'] - Plataforma ('instagram' o 'facebook')
+ * @returns {Promise<Object|null>} Detalles del medio (url, miniatura, enlace, texto)
+ */
+export async function fetchPostMediaDetails(mediaOrPostId, platform = 'instagram') {
+    if (!mediaOrPostId) return null;
+
+    try {
+        const token = await getAccessToken();
+
+        if (platform === 'instagram') {
+            const response = await axios.get(`${GRAPH_API_BASE}/${mediaOrPostId}`, {
+                params: {
+                    fields: 'id,media_type,media_url,thumbnail_url,permalink,caption',
+                    access_token: token
+                },
+                timeout: 5000
+            });
+
+            const data = response.data || {};
+            const mediaUrl = data.thumbnail_url || data.media_url || null;
+
+            return {
+                mediaId: data.id,
+                mediaUrl,
+                mediaType: data.media_type || 'IMAGE',
+                permalink: data.permalink || null,
+                caption: data.caption || ''
+            };
+        } else {
+            // Facebook Post
+            const response = await axios.get(`${GRAPH_API_BASE}/${mediaOrPostId}`, {
+                params: {
+                    fields: 'id,message,full_picture,permalink_url',
+                    access_token: token
+                },
+                timeout: 5000
+            });
+
+            const data = response.data || {};
+            return {
+                mediaId: data.id,
+                mediaUrl: data.full_picture || null,
+                mediaType: 'IMAGE',
+                permalink: data.permalink_url || null,
+                caption: data.message || ''
+            };
+        }
+    } catch (err) {
+        logger.warn('Could not fetch post media details from Graph API', {
+            mediaOrPostId,
             platform,
             error: err.response?.data?.error?.message || err.message
         });

@@ -573,22 +573,35 @@ async function processCommentReply({ commentId, mediaId, authorId, authorName, c
         const lastMessage = result.messages[result.messages.length - 1];
         const responseText = lastMessage.content;
 
-        // 7. Publicar primero en Meta Graph API para validar la entrega real
+        // 7. Intentar publicar en Meta Graph API
         let replyResult = null;
-        if (platform === 'instagram') {
-            replyResult = await replyInstagramComment(commentId, responseText);
-        } else {
-            replyResult = await replyFacebookComment(commentId, responseText);
+        let deliveryStatus = 'delivered';
+        let deliveryError = null;
+
+        try {
+            if (platform === 'instagram') {
+                replyResult = await replyInstagramComment(commentId, responseText);
+            } else {
+                replyResult = await replyFacebookComment(commentId, responseText);
+            }
+            logger.info(`Comment replied successfully on ${platform}`, { commentId, replyId: replyResult?.id });
+        } catch (apiError) {
+            deliveryStatus = 'failed';
+            deliveryError = apiError.response?.data?.error?.message || apiError.message;
+            logger.error(`Error publishing reply to Meta on ${platform}`, {
+                commentId,
+                error: deliveryError
+            });
         }
 
-        // 8. Guardar la respuesta en la base de datos SOLO si Meta la aceptó
+        // 8. Guardar la respuesta de la IA en la base de datos SIEMPRE para que el CRM nunca pierda la conversación
         await saveMessage(chat.id, user.id, 'assistant', responseText, {
             comment_id: commentId,
             reply_id: replyResult?.id || null,
-            platform
+            platform,
+            delivery_status: deliveryStatus,
+            delivery_error: deliveryError
         });
-
-        logger.info(`Comment replied successfully on ${platform}`, { commentId, replyId: replyResult?.id });
 
     } catch (error) {
         logger.error(`Error replying to comment on ${platform}`, {

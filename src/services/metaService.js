@@ -169,10 +169,14 @@ export async function fetchPostMediaDetails(mediaOrPostId, platform = 'instagram
 
             const data = response.data || {};
             const mediaUrl = data.thumbnail_url || data.media_url || null;
+            const videoUrl = (data.media_type === 'VIDEO' && data.media_url && !data.media_url.endsWith('.jpg') && !data.media_url.endsWith('.jpeg')) 
+                ? data.media_url 
+                : null;
 
             return {
                 mediaId: data.id,
                 mediaUrl,
+                videoUrl,
                 mediaType: data.media_type || 'IMAGE',
                 permalink: data.permalink || null,
                 caption: data.caption || ''
@@ -181,7 +185,7 @@ export async function fetchPostMediaDetails(mediaOrPostId, platform = 'instagram
             // Facebook Post
             const response = await axios.get(`${GRAPH_API_BASE}/${mediaOrPostId}`, {
                 params: {
-                    fields: 'id,message,full_picture,permalink_url',
+                    fields: 'id,message,full_picture,permalink_url,source',
                     access_token: token
                 },
                 timeout: 5000
@@ -191,7 +195,8 @@ export async function fetchPostMediaDetails(mediaOrPostId, platform = 'instagram
             return {
                 mediaId: data.id,
                 mediaUrl: data.full_picture || null,
-                mediaType: 'IMAGE',
+                videoUrl: data.source || null,
+                mediaType: data.source ? 'VIDEO' : 'IMAGE',
                 permalink: data.permalink_url || null,
                 caption: data.message || ''
             };

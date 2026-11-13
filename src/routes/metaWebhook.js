@@ -18,6 +18,7 @@ import {
     fetchPostMediaDetails,
     getAccessToken 
 } from '../services/metaService.js';
+import { getVideoContext } from '../services/videoContextService.js';
 import { generateThreadId } from '../utils/session.js';
 
 const router = express.Router();
@@ -418,13 +419,23 @@ async function processCommentReply({ commentId, mediaId, authorId, authorName, c
         // 2. Obtener o crear chat para el seguimiento
         chat = await getOrCreateMetaChat(user.id, `${platform}_comment`, storeId);
 
-        // 3. Consultar multimedia de la publicación o Reel si mediaId está disponible
+        // 3. Consultar multimedia y análisis de contenido del video/Reel si mediaId está disponible
         let mediaDetails = null;
+        let videoContext = null;
         if (mediaId) {
             try {
                 mediaDetails = await fetchPostMediaDetails(mediaId, platform);
+                if (mediaDetails) {
+                    videoContext = await getVideoContext({
+                        mediaId,
+                        mediaUrl: mediaDetails.mediaUrl,
+                        videoUrl: mediaDetails.videoUrl,
+                        caption: mediaDetails.caption,
+                        platform
+                    });
+                }
             } catch (mediaErr) {
-                logger.warn('Failed to fetch post media details for comment', { mediaId, platform, error: mediaErr.message });
+                logger.warn('Failed to fetch post media or video context for comment', { mediaId, platform, error: mediaErr.message });
             }
         }
 
@@ -443,6 +454,10 @@ async function processCommentReply({ commentId, mediaId, authorId, authorName, c
             post_url: mediaDetails?.permalink || null,
             post_caption: mediaDetails?.caption || null
         };
+
+        if (videoContext) {
+            messageMetadata.video_analysis = videoContext;
+        }
 
         if (mediaDetails?.mediaUrl) {
             messageMetadata.media_url = mediaDetails.mediaUrl;
@@ -487,7 +502,7 @@ async function processCommentReply({ commentId, mediaId, authorId, authorName, c
             return;
         }
 
-        // 6. Invocar el agente con contexto enriquecido de la publicación
+        // 6. Invocar el agente con contexto enriquecido de la publicación y video
         const agent = await getAgent();
         const threadId = generateThreadId(chat.id);
         const config = {
@@ -496,12 +511,26 @@ async function processCommentReply({ commentId, mediaId, authorId, authorName, c
             }
         };
 
-        const postContext = mediaDetails?.caption 
-            ? ` en nuestra publicación/Reel sobre: "${mediaDetails.caption}"` 
+        const contextDetails = [];
+        if (mediaDetails?.caption) {
+            contextDetails.push(`- Título o texto publicado en redes: "${mediaDetails.caption}"`);
+        }
+        if (videoContext?.summary) {
+            contextDetails.push(`- Tema y producto/servicio de lo que trata el video: ${videoContext.summary}`);
+        }
+        if (videoContext?.transcription) {
+            contextDetails.push(`- Transcripción del audio hablado en el video: "${videoContext.transcription}"`);
+        }
+        if (videoContext?.visual_elements?.length > 0) {
+            contextDetails.push(`- Acabados y elementos mostrados: ${videoContext.visual_elements.join(', ')}`);
+        }
+
+        const postContext = contextDetails.length > 0 
+            ? ` en nuestra publicación/Reel con la siguiente información:\n${contextDetails.join('\n')}\n` 
             : '';
 
         const promptInstruction = cleanText 
-            ? `El usuario @${authorName || 'cliente'} dejó el siguiente comentario público${postContext}: "${cleanText}". Genera una respuesta breve, profesional, cordial y atractiva para responder su comentario de forma pública (máximo 2-3 frases), teniendo en cuenta el contexto de la publicación e invitándolo si es pertinente a escribirnos por mensaje privado o consultar su proyecto.`
+            ? `El usuario @${authorName || 'cliente'} dejó el siguiente comentario público${postContext}\nComentario/Pregunta del usuario: "${cleanText}". Responde a su pregunta con conocimiento exacto y específico de lo que se promociona y muestra en el video/publicación (máximo 2-3 frases), de forma profesional y cordial, invitándolo si es pertinente a escribirnos por mensaje privado para cotizar o conocer más detalles de su proyecto.`
             : `El usuario @${authorName || 'cliente'} interactuó con nuestra publicación/Reel${postContext}. Genera un saludo cordial y breve (máximo 2 frases) agradeciendo su interés e invitándolo a consultarnos por mensaje privado sobre sus proyectos.`;
 
         const result = await agent.invoke(

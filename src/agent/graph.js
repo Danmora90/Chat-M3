@@ -217,7 +217,7 @@ export async function updateAgentMemory(chatId, messages, extraState = {}) {
     try {
         if (!chatId || !messages) return;
         const agent = await getAgent();
-        const threadId = generateThreadId(chatId);
+        const threadId = extraState.threadId || generateThreadId(chatId);
         const config = {
             configurable: {
                 thread_id: threadId

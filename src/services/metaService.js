@@ -183,15 +183,33 @@ export async function fetchPostMediaDetails(mediaOrPostId, platform = 'instagram
             };
         } else {
             // Facebook Post
-            const response = await axios.get(`${GRAPH_API_BASE}/${mediaOrPostId}`, {
-                params: {
-                    fields: 'id,message,full_picture,permalink_url,source',
-                    access_token: token
-                },
-                timeout: 5000
-            });
+            let data = null;
+            try {
+                const response = await axios.get(`${GRAPH_API_BASE}/${mediaOrPostId}`, {
+                    params: {
+                        fields: 'id,message,full_picture,permalink_url,source',
+                        access_token: token
+                    },
+                    timeout: 5000
+                });
+                data = response.data || {};
+            } catch (fbErr) {
+                // Si falla por el campo 'source' (no es video), reintentar con campos base
+                const errMsg = fbErr.response?.data?.error?.message || '';
+                if (errMsg.includes('source') || errMsg.includes('field')) {
+                    const fallbackRes = await axios.get(`${GRAPH_API_BASE}/${mediaOrPostId}`, {
+                        params: {
+                            fields: 'id,message,full_picture,permalink_url',
+                            access_token: token
+                        },
+                        timeout: 5000
+                    });
+                    data = fallbackRes.data || {};
+                } else {
+                    throw fbErr;
+                }
+            }
 
-            const data = response.data || {};
             return {
                 mediaId: data.id,
                 mediaUrl: data.full_picture || null,

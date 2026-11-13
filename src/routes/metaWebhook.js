@@ -381,11 +381,17 @@ async function handleChangeEvent(change, isInstagramObject, storeId, entryId) {
             }
         }
 
+        const fallbackMedia = {
+            mediaUrl: value.photo || value.video || null,
+            postUrl: value.link || null
+        };
+
         logger.info('Received Facebook comment', {
             commentId,
             mediaId,
             from: fromUser?.name,
-            text
+            text,
+            hasFallbackMedia: !!fallbackMedia.mediaUrl
         });
 
         await processCommentReply({
@@ -395,7 +401,8 @@ async function handleChangeEvent(change, isInstagramObject, storeId, entryId) {
             authorName: fromUser?.name,
             commentText: text,
             platform: 'facebook',
-            storeId
+            storeId,
+            fallbackMedia
         });
     }
 }
@@ -403,7 +410,7 @@ async function handleChangeEvent(change, isInstagramObject, storeId, entryId) {
 /**
  * Procesa la respuesta de la IA a un comentario público
  */
-async function processCommentReply({ commentId, mediaId, authorId, authorName, commentText, platform, storeId }) {
+async function processCommentReply({ commentId, mediaId, authorId, authorName, commentText, platform, storeId, fallbackMedia = null }) {
     let chat = null;
     let user = null;
 
@@ -437,6 +444,18 @@ async function processCommentReply({ commentId, mediaId, authorId, authorName, c
             } catch (mediaErr) {
                 logger.warn('Failed to fetch post media or video context for comment', { mediaId, platform, error: mediaErr.message });
             }
+        }
+
+        // Si fetchPostMediaDetails no trajo datos pero el webhook trajo fallbackMedia
+        if (!mediaDetails && fallbackMedia?.mediaUrl) {
+            mediaDetails = {
+                mediaId,
+                mediaUrl: fallbackMedia.mediaUrl,
+                videoUrl: null,
+                mediaType: 'IMAGE',
+                permalink: fallbackMedia.postUrl || null,
+                caption: ''
+            };
         }
 
         const cleanText = (commentText && commentText.trim() !== '' && commentText !== 'undefined' && commentText !== '[Comentario en publicación]') 
@@ -481,11 +500,15 @@ async function processCommentReply({ commentId, mediaId, authorId, authorName, c
             messageMetadata
         );
 
+        const postScope = mediaId || commentId || 'general';
+        const threadId = generateThreadId(`${chat.id}_${postScope}`);
+
         // 5. Verificar si el chat está pausado por humano
         if (chat.is_ai_paused) {
             logger.info('Comment chat is in Human Handoff mode (AI paused). Skipping automated reply.', {
                 chatId: chat.id,
-                platform
+                platform,
+                postScope
             });
 
             await updateAgentMemory(
@@ -495,7 +518,8 @@ async function processCommentReply({ commentId, mediaId, authorId, authorName, c
                     content: displayContent
                 },
                 {
-                    userId: user.id
+                    userId: user.id,
+                    threadId
                 }
             );
 
@@ -504,7 +528,6 @@ async function processCommentReply({ commentId, mediaId, authorId, authorName, c
 
         // 6. Invocar el agente con contexto enriquecido de la publicación y video
         const agent = await getAgent();
-        const threadId = generateThreadId(chat.id);
         const config = {
             configurable: {
                 thread_id: threadId
@@ -525,13 +548,17 @@ async function processCommentReply({ commentId, mediaId, authorId, authorName, c
             contextDetails.push(`- Acabados y elementos mostrados: ${videoContext.visual_elements.join(', ')}`);
         }
 
-        const postContext = contextDetails.length > 0 
-            ? ` en nuestra publicación/Reel con la siguiente información:\n${contextDetails.join('\n')}\n` 
-            : '';
-
-        const promptInstruction = cleanText 
-            ? `El usuario @${authorName || 'cliente'} dejó el siguiente comentario público${postContext}\nComentario/Pregunta del usuario: "${cleanText}". Responde a su pregunta con conocimiento exacto y específico de lo que se promociona y muestra en el video/publicación (máximo 2-3 frases), de forma profesional y cordial, invitándolo si es pertinente a escribirnos por mensaje privado para cotizar o conocer más detalles de su proyecto.`
-            : `El usuario @${authorName || 'cliente'} interactuó con nuestra publicación/Reel${postContext}. Genera un saludo cordial y breve (máximo 2 frases) agradeciendo su interés e invitándolo a consultarnos por mensaje privado sobre sus proyectos.`;
+        let promptInstruction;
+        if (contextDetails.length > 0) {
+            const postContext = ` en nuestra publicación/Reel con la siguiente información:\n${contextDetails.join('\n')}\n`;
+            promptInstruction = cleanText 
+                ? `El usuario @${authorName || 'cliente'} dejó el siguiente comentario público${postContext}\nComentario/Pregunta del usuario: "${cleanText}". Responde a su pregunta con conocimiento exacto y específico de lo que se promociona y muestra en el video/publicación (máximo 2-3 frases), de forma profesional y cordial, invitándolo si es pertinente a escribirnos por mensaje privado para cotizar o conocer más detalles de su proyecto.`
+                : `El usuario @${authorName || 'cliente'} interactuó con nuestra publicación/Reel${postContext}. Genera un saludo cordial y breve (máximo 2 frases) agradeciendo su interés e invitándolo a consultarnos por mensaje privado sobre sus proyectos.`;
+        } else {
+            promptInstruction = cleanText
+                ? `El usuario @${authorName || 'cliente'} dejó el siguiente comentario público en una de nuestras publicaciones en redes sociales: "${cleanText}". NOTA IMPORTANTE: No se dispone de la descripción ni temática específica de esta publicación en particular. Responde de forma cordial, profesional y atractiva (máximo 2 frases), agradeciendo su interés e invitándolo a contarnos en qué proyecto, espacio o servicio de diseño/remodelación está interesado o a escribirnos por mensaje privado para brindarle toda la información y cotizaciones.`
+                : `El usuario @${authorName || 'cliente'} interactuó con una de nuestras publicaciones en redes sociales. Genera un saludo cordial y breve (máximo 2 frases) agradeciendo su interés e invitándolo a consultarnos por mensaje privado sobre sus proyectos.`;
+        }
 
         const result = await agent.invoke(
             {

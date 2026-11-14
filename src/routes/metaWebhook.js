@@ -867,12 +867,12 @@ async function processCommentReply({ commentId, mediaId, authorId, authorName, c
 
         if (mediaDetails?.mediaUrl) {
             messageMetadata.media_url = mediaDetails.mediaUrl;
-            messageMetadata.content_type = mediaDetails.mediaType === 'VIDEO' ? 'video/mp4' : 'image/jpeg';
+            messageMetadata.content_type = 'image/jpeg';
             messageMetadata.attachments = [{
                 url: mediaDetails.mediaUrl,
-                type: mediaDetails.mediaType === 'VIDEO' ? 'video' : 'image',
-                mime: mediaDetails.mediaType === 'VIDEO' ? 'video/mp4' : 'image/jpeg',
-                content_type: mediaDetails.mediaType === 'VIDEO' ? 'video/mp4' : 'image/jpeg',
+                type: 'image',
+                mime: 'image/jpeg',
+                content_type: 'image/jpeg',
                 original_url: mediaDetails.mediaUrl,
                 storage_provider: 'meta'
             }];
@@ -925,8 +925,14 @@ async function processCommentReply({ commentId, mediaId, authorId, authorName, c
         if (mediaDetails?.caption) {
             contextDetails.push(`- Título o texto publicado en redes: "${mediaDetails.caption}"`);
         }
+        if (videoContext?.project_title) {
+            contextDetails.push(`- Proyecto identificado: ${videoContext.project_title}`);
+        }
+        if (videoContext?.text_overlay) {
+            contextDetails.push(`- Textos o títulos en el video: "${videoContext.text_overlay}"`);
+        }
         if (videoContext?.summary) {
-            contextDetails.push(`- Tema y producto/servicio de lo que trata el video: ${videoContext.summary}`);
+            contextDetails.push(`- Resumen del proyecto o temática: ${videoContext.summary}`);
         }
         if (videoContext?.transcription) {
             contextDetails.push(`- Transcripción del audio hablado en el video: "${videoContext.transcription}"`);
@@ -939,7 +945,7 @@ async function processCommentReply({ commentId, mediaId, authorId, authorName, c
         if (contextDetails.length > 0) {
             const postContext = ` en nuestra publicación/Reel con la siguiente información:\n${contextDetails.join('\n')}\n`;
             promptInstruction = cleanText 
-                ? `El usuario @${authorName || 'cliente'} dejó el siguiente comentario público${postContext}\nComentario/Pregunta del usuario: "${cleanText}". Responde a su pregunta con conocimiento exacto y específico de lo que se promociona y muestra en el video/publicación (máximo 2-3 frases), de forma profesional y cordial, invitándolo si es pertinente a escribirnos por mensaje privado para cotizar o conocer más detalles de su proyecto.`
+                ? `El usuario @${authorName || 'cliente'} dejó el siguiente comentario público${postContext}\nComentario/Pregunta del usuario: "${cleanText}". Responde a su comentario con conocimiento exacto y específico del proyecto y servicio que se promociona en la publicación (máximo 2-3 frases), de forma profesional y cordial. Si el comentario es un elogio o felicitación general (ej. "Espectacular", "Hermoso", "Muy lindo"), agradécele mencionando con orgullo el proyecto específico y sus características destacadas, e invítalo si es pertinente a escribirnos por mensaje privado para cotizar o conocer más detalles de su proyecto.`
                 : `El usuario @${authorName || 'cliente'} interactuó con nuestra publicación/Reel${postContext}. Genera un saludo cordial y breve (máximo 2 frases) agradeciendo su interés e invitándolo a consultarnos por mensaje privado sobre sus proyectos.`;
         } else {
             promptInstruction = cleanText

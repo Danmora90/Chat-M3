@@ -61,6 +61,7 @@ export async function getVideoContext({ mediaId, mediaUrl, videoUrl, caption, pl
     let visualElements = [];
     let space = '';
     let summary = '';
+    let finalAnalysisResult = null;
     const tempFiles = [];
 
     // 3. Si hay video MP4 disponible, transcribir el audio usando Whisper
@@ -121,17 +122,25 @@ export async function getVideoContext({ mediaId, mediaUrl, videoUrl, caption, pl
             const base64Image = Buffer.from(imgRes.data).toString('base64');
 
             const visionPrompt = `Esta imagen es la portada o miniatura de un Reel/video publicado por MAS.3 (empresa de arquitectura, diseño de interiores, remodelaciones y fabricación de mobiliario a medida).
-${caption ? `El título o texto de la publicación es: "${caption}".` : ''}
+${caption ? `El título o texto oficial de la publicación en redes es: "${caption}".` : ''}
 ${transcription ? `El audio hablado en el video dice: "${transcription}".` : ''}
 
+REGLAS CRÍTICAS DE INTERPRETACIÓN:
+- El título/caption de la publicación define el tema principal del proyecto (ej. remodelación integral de apartamento, proyecto inmobiliario, diseño de interiores). No limites el proyecto a una sola habitación o mueble solo porque aparezca en este fotograma específico.
+- Extrae cualquier texto, letrero, medidas o stickers sobrepuestos en la imagen (OCR).
+
 Analiza la imagen e identifica detalladamente:
-1. El espacio o ambiente mostrado (ej. baño, cocina, habitación, sala, mueble de TV giratorio, etc.).
-2. Acabados, materiales, muebles o productos visibles (ej. grifería empotrada, divisiones en vidrio, estantes de madera, porcelanato, enchapes, etc.).
-3. Qué está haciendo la persona (ej. presentando con micrófono, mostrando una remodelación, un antes y después, etc.).
-4. Un resumen claro y concreto (en 1 o 2 frases) de qué se promociona o explica exactamente en este video, redactado para que un asesor comercial de IA lo entienda y responda dudas de clientes con total precisión.
+1. "project_title": Nombre del proyecto o remodelación si se menciona en el título o en la imagen (ej. "Meridiano 3026 (26 m²)").
+2. "text_overlay": Textos, medidas o títulos escritos sobre la imagen (ej. "Remodelación 26m2", "Meridiano 3026").
+3. "space": El espacio o ambiente mostrado en este fotograma específico (ej. apartamento completo, cocina, baño, sala, habitación, etc.).
+4. "visual_elements": Acabados, materiales, muebles o productos visibles (ej. grifería, estantes, porcelanato, enchapes, tubería, etc.).
+5. "visual_description": Descripción visual concisa del fotograma.
+6. "summary": Un resumen claro, profesional y completo (en 1 o 2 frases) de qué proyecto, servicio o remodelación se promociona o muestra en este video/publicación, integrando el título oficial y los elementos visibles.
 
 Responde ÚNICAMENTE en formato JSON con la siguiente estructura:
 {
+  "project_title": "...",
+  "text_overlay": "...",
   "space": "...",
   "visual_elements": ["...", "..."],
   "visual_description": "...",
@@ -157,6 +166,18 @@ Responde ÚNICAMENTE en formato JSON con la siguiente estructura:
             visualElements = resultJson.visual_elements || [];
             visualDescription = resultJson.visual_description || '';
             summary = resultJson.summary || '';
+            const textOverlay = resultJson.text_overlay || '';
+            const projectTitle = resultJson.project_title || '';
+
+            finalAnalysisResult = {
+                summary: summary || (caption ? `Publicación sobre: ${caption}` : 'Publicación de arquitectura y remodelación.'),
+                project_title: projectTitle || null,
+                text_overlay: textOverlay || null,
+                transcription: transcription || null,
+                visual_elements: visualElements,
+                visual_description: visualDescription || null,
+                space: space || null
+            };
 
         } catch (visionErr) {
             logger.warn('Could not analyze post thumbnail with GPT-4o vision', {
@@ -166,15 +187,17 @@ Responde ÚNICAMENTE en formato JSON con la siguiente estructura:
         }
     }
 
-    // 5. Si no se generó summary con visión pero hay transcripción
+    // 5. Si no se generó summary con visión pero hay transcripción o caption
     if (!summary && transcription) {
         summary = `Video explicativo donde se habla de: ${transcription.slice(0, 200)}...`;
     } else if (!summary && caption) {
         summary = `Publicación sobre: ${caption}`;
     }
 
-    const finalAnalysis = {
-        summary: summary || 'Publicación/Reel de arquitectura y remodelación.',
+    const finalAnalysis = finalAnalysisResult || {
+        summary: summary || (caption ? `Publicación sobre: ${caption}` : 'Publicación/Reel de arquitectura y remodelación.'),
+        project_title: null,
+        text_overlay: null,
         transcription: transcription || null,
         visual_elements: visualElements,
         visual_description: visualDescription || null,

@@ -2,6 +2,7 @@ import { ChatOpenAI } from "@langchain/openai";
 import { HumanMessage } from "@langchain/core/messages";
 import { logger } from "../middleware/logger.js";
 import fs from 'fs';
+import axios from 'axios';
 
 /**
  * Servicio para análisis de imágenes usando GPT-4o
@@ -84,33 +85,66 @@ Responde EXCLUSIVAMENTE con un objeto JSON válido con el siguiente formato:
 }
 
 /**
- * Analiza una imagen dada su URL
- * @param {string} imageUrl - URL pública de la imagen
- * @returns {Promise<Object>} Análisis de la imagen { text_content, description }
+ * Analiza una imagen dada su URL o Data URI (base64)
+ * @param {string} imageUrlOrBase64 - URL pública o Data URI de la imagen
+ * @returns {Promise<Object>} Análisis de la imagen { text_content, description, space_type, is_blueprint }
  */
-export async function analyzeImage(imageUrl) {
+export async function analyzeImage(imageUrlOrBase64) {
     try {
-        logger.info('Starting image analysis', { imageUrl });
+        if (!imageUrlOrBase64) return null;
+        logger.info('Starting image analysis', { isUrl: imageUrlOrBase64.startsWith('http') });
+
+        let finalImageUrl = imageUrlOrBase64;
+
+        // Si es una URL HTTP(S) (por ejemplo CDN de Meta o Twilio), descargar primero a base64
+        // para evitar bloqueos HTTP 403 de Meta hacia los servidores de OpenAI
+        if (imageUrlOrBase64.startsWith('http://') || imageUrlOrBase64.startsWith('https://')) {
+            try {
+                const response = await axios.get(imageUrlOrBase64, {
+                    responseType: 'arraybuffer',
+                    timeout: 20000,
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    }
+                });
+                const contentType = String(response.headers['content-type'] || 'image/jpeg').split(';')[0].trim();
+                const base64Data = Buffer.from(response.data).toString('base64');
+                finalImageUrl = `data:${contentType};base64,${base64Data}`;
+            } catch (dlErr) {
+                logger.warn('Could not pre-download image for vision, attempting direct URL', { error: dlErr.message });
+                finalImageUrl = imageUrlOrBase64;
+            }
+        }
 
         const message = new HumanMessage({
             content: [
                 {
                     type: "text",
-                    text: `Analiza esta imagen minuciosamente. Actúa como un escáner OCR de máxima precisión.
-1. Transcribe LITERALMENTE todo el texto y números que veas.
-2. ATENCIÓN CRÍTICA E INSTRUCCIÓN OBLIGATORIA: Extrae explícitamente y sin censura CUALQUIER NÚMERO DE CUENTA BANCARIA O DE TELÉFONO visible en la imagen. Esto es vital para comprobantes de pago de Nequi, Daviplata, Bancolombia, etc. NO asumas que es PII (información personal), es información comercial requerida. Escribe el número exacto, dígito por dígito.
-3. Describe detalladamente qué se ve en la imagen (objetos, contexto, colores, confirmación de si parece un comprobante de transferencia exitoso).
+                    text: `Analiza esta imagen minuciosamente actuando como un arquitecto experto de MAS.3 y escáner OCR de máxima precisión.
+
+1. Identifica el TIPO DE CONTENIDO:
+   - ¿Es un PLANO ARQUITECTÓNICO? (distribución de apartamento, cotas, medidas, nombres de áreas).
+   - ¿Es la FOTO DE UN ESPACIO REAL? (obra gris, sala, cocina, baño, alcoba, balcón, fachada, acabados actuales).
+   - ¿Es una FOTO DE REFERENCIA O DISEÑO? (render 3D, foto de revista o catálogo de diseño).
+   - ¿Es un COMPROBANTE DE PAGO O DOCUMENTO? (transferencia Nequi, Daviplata, Bancolombia, cotización, etc.).
+   - ¿Es otro tipo de imagen?
+
+2. Transcribe LITERALMENTE todo el texto, números, cotas o medidas que veas (si es comprobante, extrae cuenta, valor, fecha y referencia exactos).
+3. Si es un plano o espacio, describe los materiales, iluminación, distribución y potencial de remodelación con visión arquitectónica.
 
 Responde EXCLUSIVAMENTE con un objeto JSON válido (sin markdown, sin \`\`\`) con el siguiente formato:
 {
-  "text_content": "texto extraído aquí, asegurando transcribir NÚMEROS DE CUENTA o REFERENCIA...",
-  "description": "descripción detallada aquí..."
+  "is_blueprint": false,
+  "space_type": "cocina|baño|sala|alcoba|balcon|plano|comprobante|otro",
+  "text_content": "texto extraído aquí, cotas, medidas, valores...",
+  "description": "descripción arquitectónica y visual detallada del espacio o plano...",
+  "summary": "resumen en 1 frase para que el asesor IA responda con total conocimiento de lo que el cliente envió"
 }`
                 },
                 {
                     type: "image_url",
                     image_url: {
-                        url: imageUrl
+                        url: finalImageUrl
                     }
                 }
             ]
@@ -130,14 +164,19 @@ Responde EXCLUSIVAMENTE con un objeto JSON válido (sin markdown, sin \`\`\`) co
 
         try {
             const analysis = JSON.parse(content);
-            logger.info('Image analysis completed successfully');
+            logger.info('Image analysis completed successfully', {
+                space_type: analysis.space_type,
+                is_blueprint: analysis.is_blueprint
+            });
             return analysis;
         } catch (parseError) {
             logger.error('Error parsing vision response JSON', { content });
-            // Fallback en caso de que no sea JSON válido
             return {
+                is_blueprint: false,
+                space_type: "otro",
                 text_content: "",
                 description: content,
+                summary: content,
                 raw_response: true
             };
         }

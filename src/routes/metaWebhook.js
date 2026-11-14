@@ -1,5 +1,7 @@
 import express from 'express';
 import axios from 'axios';
+import path from 'path';
+import os from 'os';
 import { logger } from '../middleware/logger.js';
 import { catchAsync } from '../utils/errors.js';
 import { getAgent, updateAgentMemory } from '../agent/graph.js';
@@ -7,7 +9,8 @@ import {
     getOrCreateMetaUser, 
     getOrCreateMetaChat, 
     saveMessage,
-    hasMessageSid 
+    hasMessageSid,
+    supabaseAdmin
 } from '../services/supabase.js';
 import { 
     sendMessengerMessage, 
@@ -19,6 +22,9 @@ import {
     getAccessToken 
 } from '../services/metaService.js';
 import { getVideoContext } from '../services/videoContextService.js';
+import { analyzeImage, analyzeVideoFrames } from '../services/visionService.js';
+import { transcribeAudio } from '../services/transcriptionService.js';
+import { downloadPublicMediaToFile, processVideo, cleanupTempFiles } from '../utils/mediaProcessor.js';
 import { generateThreadId } from '../utils/session.js';
 
 const router = express.Router();
@@ -161,7 +167,11 @@ async function processMetaEvents(body) {
 }
 
 /**
- * Manejador de Mensajes Directos (Messenger o Instagram Direct)
+ * Manejador de Mensajes Directos (Messenger o Instagram Direct) con soporte multimodal completo:
+ * - Imágenes / Planos / Comprobantes (Visión GPT-4o)
+ * - Notas de voz / Audios (Whisper)
+ * - Videos (Extracción de audio + Whisper + Frames con GPT-4o)
+ * - Documentos y Contenido compartido
  */
 async function handleDirectMessage(event, isInstagramObject, storeId, entryId) {
     const senderId = event.sender?.id;
@@ -173,26 +183,17 @@ async function handleDirectMessage(event, isInstagramObject, storeId, entryId) {
         return;
     }
 
-    const messageText = message.text;
+    const platform = isInstagramObject ? 'instagram' : 'facebook';
+    const messageText = (message.text || '').trim();
     const messageMid = message.mid;
+    const rawAttachments = Array.isArray(message.attachments) ? message.attachments : [];
 
-    // Por ahora procesamos mensajes de texto (o indicadores de adjunto si no hay texto)
-    let contentToProcess = messageText;
-    if (!contentToProcess) {
-        if (message.attachments && message.attachments.length > 0) {
-            contentToProcess = '[El usuario envió un archivo adjunto]';
-        } else {
-            return; // Nada que procesar
-        }
+    // Si no hay texto ni adjuntos ni quick_reply ni story_share, no hay nada que procesar
+    if (!messageText && rawAttachments.length === 0 && !message.quick_reply && !message.story_share) {
+        return;
     }
 
-    const platform = isInstagramObject ? 'instagram' : 'facebook';
-
-    logger.info(`Received ${platform} direct message`, {
-        from: senderId,
-        mid: messageMid,
-        length: contentToProcess.length
-    });
+    const tempFiles = [];
 
     try {
         // 1. Obtener o crear usuario de Meta
@@ -214,25 +215,206 @@ async function handleDirectMessage(event, isInstagramObject, storeId, entryId) {
             }
         }
 
-        // 4. Guardar mensaje del usuario
+        // 4. Procesamiento de adjuntos multimedia y enriquecimiento de contexto
+        const processedAttachments = [];
+        const attachmentsContext = [];
+        let audioTranscriptionText = '';
         const messageMetadata = { platform, meta_mid: messageMid };
-        if (Array.isArray(message.attachments) && message.attachments.length > 0) {
-            const firstAtt = message.attachments[0];
-            const attUrl = firstAtt.payload?.url;
-            if (attUrl) {
-                messageMetadata.media_url = attUrl;
-                messageMetadata.content_type = firstAtt.type === 'video' ? 'video/mp4' : 'image/jpeg';
-                messageMetadata.attachments = [{
-                    url: attUrl,
-                    type: firstAtt.type || 'image',
-                    mime: firstAtt.type === 'video' ? 'video/mp4' : 'image/jpeg',
-                    content_type: firstAtt.type === 'video' ? 'video/mp4' : 'image/jpeg',
-                    original_url: attUrl,
-                    storage_provider: 'meta'
-                }];
+
+        // Si es una respuesta o interacción con historia de Instagram
+        if (message.story_share) {
+            const storyUrl = message.story_share.link || '';
+            attachmentsContext.push(`[El usuario interactuó con una historia de Instagram${storyUrl ? `: ${storyUrl}` : ''}]`);
+        }
+
+        for (let i = 0; i < rawAttachments.length; i++) {
+            const rawAtt = rawAttachments[i];
+            const attType = rawAtt.type || 'file';
+            const attUrl = rawAtt.payload?.url || rawAtt.url;
+            const attTitle = rawAtt.payload?.title || rawAtt.title || null;
+
+            if (!attUrl) {
+                if (rawAtt.type === 'fallback' || rawAtt.type === 'share') {
+                    if (attTitle) {
+                        attachmentsContext.push(`[Contenido compartido: ${attTitle}]`);
+                    }
+                }
+                continue;
+            }
+
+            let mime = 'application/octet-stream';
+            if (attType === 'image') mime = 'image/jpeg';
+            else if (attType === 'audio') mime = 'audio/mp4';
+            else if (attType === 'video') mime = 'video/mp4';
+            else if (attType === 'file') mime = 'application/pdf';
+
+            const attachmentRecord = {
+                type: attType,
+                url: attUrl,
+                original_url: attUrl,
+                mime,
+                content_type: mime,
+                title: attTitle,
+                storage_provider: 'meta'
+            };
+            processedAttachments.push(attachmentRecord);
+
+            // A) IMÁGENES (Fotos de espacios, planos arquitectónicos, renders, comprobantes)
+            if (attType === 'image') {
+                logger.info('Analyzing incoming Meta image with Vision service', { url: attUrl });
+                try {
+                    const analysis = await analyzeImage(attUrl);
+                    if (analysis && !analysis.error) {
+                        messageMetadata.image_analysis = analysis;
+                        const imageParts = [];
+                        if (analysis.space_type) {
+                            imageParts.push(`Tipo de contenido: ${analysis.space_type}${analysis.is_blueprint ? ' (Plano arquitectónico)' : ''}`);
+                        }
+                        if (analysis.description) {
+                            imageParts.push(`Descripción visual: ${analysis.description}`);
+                        }
+                        if (analysis.text_content) {
+                            imageParts.push(`Texto/Medidas detectadas en la imagen: ${analysis.text_content}`);
+                        }
+
+                        if (imageParts.length > 0) {
+                            attachmentsContext.push(`[Imagen enviada por el usuario:\n${imageParts.join('\n')}]`);
+                        } else if (analysis.summary) {
+                            attachmentsContext.push(`[Imagen enviada por el usuario: ${analysis.summary}]`);
+                        }
+                    } else {
+                        attachmentsContext.push('[El usuario envió una imagen]');
+                    }
+                } catch (imgErr) {
+                    logger.error('Error analyzing Meta image:', imgErr);
+                    attachmentsContext.push('[El usuario envió una imagen]');
+                }
+            }
+
+            // B) AUDIO / NOTAS DE VOZ (Transcripción con Whisper)
+            else if (attType === 'audio') {
+                logger.info('Analyzing incoming Meta audio note', { url: attUrl });
+                try {
+                    const ext = mime.includes('ogg') ? 'ogg' : 'mp4';
+                    const tempAudioPath = path.join(os.tmpdir(), `meta_aud_${messageMid || Date.now()}_${i}.${ext}`);
+                    await downloadPublicMediaToFile(attUrl, tempAudioPath);
+                    tempFiles.push(tempAudioPath);
+
+                    const transcription = await transcribeAudio(tempAudioPath);
+                    if (transcription && transcription.trim().length > 0) {
+                        messageMetadata.audio_transcription = transcription.trim();
+                        audioTranscriptionText = transcription.trim();
+                        logger.info('Meta audio transcribed successfully', { textLength: transcription.trim().length });
+                    }
+                } catch (audErr) {
+                    logger.error('Error analyzing Meta audio note:', audErr);
+                }
+            }
+
+            // C) VIDEOS (Extracción de audio + frames)
+            else if (attType === 'video') {
+                logger.info('Analyzing incoming Meta video', { url: attUrl });
+                try {
+                    const tempVideoPath = path.join(os.tmpdir(), `meta_vid_${messageMid || Date.now()}_${i}.mp4`);
+                    await downloadPublicMediaToFile(attUrl, tempVideoPath);
+                    tempFiles.push(tempVideoPath);
+
+                    const { audioPath, frames } = await processVideo(tempVideoPath);
+                    if (audioPath) tempFiles.push(audioPath);
+                    if (frames && frames.length > 0) tempFiles.push(...frames);
+
+                    let videoTranscription = '';
+                    if (audioPath) {
+                        videoTranscription = await transcribeAudio(audioPath);
+                    }
+
+                    let visualDescription = '';
+                    if (frames && frames.length > 0) {
+                        const frameAnalysis = await analyzeVideoFrames(frames);
+                        visualDescription = frameAnalysis?.description || '';
+                    }
+
+                    messageMetadata.video_analysis = {
+                        transcription: videoTranscription,
+                        visual_description: visualDescription
+                    };
+
+                    const videoParts = [];
+                    if (visualDescription) {
+                        videoParts.push(`Descripción visual: ${visualDescription}`);
+                    }
+                    if (videoTranscription) {
+                        videoParts.push(`Audio transcrito: "${videoTranscription}"`);
+                    }
+
+                    if (videoParts.length > 0) {
+                        attachmentsContext.push(`[Video enviado por el cliente:\n${videoParts.join('\n')}]`);
+                    } else {
+                        attachmentsContext.push('[El usuario envió un video]');
+                    }
+                } catch (vidErr) {
+                    logger.error('Error analyzing Meta video:', vidErr);
+                    attachmentsContext.push('[El usuario envió un video]');
+                }
+            }
+
+            // D) ARCHIVOS / DOCUMENTOS (PDF, etc.)
+            else if (attType === 'file') {
+                const docName = attTitle || 'documento adjunto';
+                attachmentsContext.push(`[Archivo/Documento enviado por el usuario: ${docName}]`);
+            }
+
+            // E) COMPARTIDOS (Reels, publicaciones, enlaces)
+            else if (attType === 'share') {
+                const shareTitle = attTitle || 'publicación o reel de Instagram';
+                attachmentsContext.push(`[El usuario compartió: ${shareTitle} (${attUrl})]`);
             }
         }
 
+        // Construir contentToProcess integrando texto, transcripción y contexto visual
+        let contentToProcess = messageText;
+
+        // Si hubo nota de voz transcrita, la incorporamos directamente como mensaje del cliente
+        if (audioTranscriptionText) {
+            contentToProcess = contentToProcess
+                ? `${contentToProcess}\n\n${audioTranscriptionText}`
+                : audioTranscriptionText;
+        }
+
+        // Si hubo imágenes, videos o documentos, adjuntamos la información contextual
+        if (attachmentsContext.length > 0) {
+            const contextBlock = attachmentsContext.join('\n\n');
+            contentToProcess = contentToProcess
+                ? `${contentToProcess}\n\n${contextBlock}`
+                : contextBlock;
+        }
+
+        // Si no hubo texto ni se pudo transcribir pero sí hubo adjuntos
+        if (!contentToProcess && rawAttachments.length > 0) {
+            contentToProcess = '[El usuario envió un archivo adjunto]';
+        }
+
+        if (!contentToProcess) {
+            logger.warn('No content to process for Meta DM', { senderId, messageMid });
+            return;
+        }
+
+        // Enlazar metadatos de adjuntos para visualización en el CRM
+        if (processedAttachments.length > 0) {
+            messageMetadata.attachments = processedAttachments;
+            messageMetadata.media_url = processedAttachments[0].url;
+            messageMetadata.content_type = processedAttachments[0].content_type;
+        }
+
+        logger.info(`Received ${platform} direct message with full multimodal context`, {
+            from: senderId,
+            mid: messageMid,
+            hasAttachments: processedAttachments.length > 0,
+            attachmentTypes: processedAttachments.map(a => a.type),
+            length: contentToProcess.length
+        });
+
+        // 5. Guardar mensaje del usuario
         await saveMessage(
             chat.id,
             user.id,
@@ -242,14 +424,13 @@ async function handleDirectMessage(event, isInstagramObject, storeId, entryId) {
             messageMid || null
         );
 
-        // 5. Verificar si el chat está pausado por humano
+        // 6. Verificar si el chat está pausado por humano
         if (chat.is_ai_paused) {
             logger.info('Chat is in Human Handoff mode (AI paused). Skipping automated response.', {
                 chatId: chat.id,
                 platform
             });
 
-            // Guardar el mensaje del usuario en la memoria de LangGraph para que persista al reactivar la IA
             await updateAgentMemory(
                 chat.id,
                 {
@@ -264,7 +445,7 @@ async function handleDirectMessage(event, isInstagramObject, storeId, entryId) {
             return;
         }
 
-        // 6. Invocar al agente IA
+        // 7. Invocar al agente IA
         const agent = await getAgent();
         const threadId = generateThreadId(chat.id);
         const config = {
@@ -284,12 +465,24 @@ async function handleDirectMessage(event, isInstagramObject, storeId, entryId) {
         );
 
         const lastMessage = result.messages[result.messages.length - 1];
-        const responseText = lastMessage.content;
+        const responseText = lastMessage?.content || '';
 
-        // 7. Guardar respuesta del asistente
+        // Si el agente produjo un texto vacío o se activó la directiva interna de silencio
+        if (!responseText || responseText.trim().length === 0) {
+            logger.warn('Agent produced empty response for Meta DM', { chatId: chat.id });
+            return;
+        }
+
+        if (responseText.toLowerCase().includes('silencio y atención humana') || responseText.toLowerCase().includes('silencio y atencion humana')) {
+            logger.info('Silence / Human attention triggered by agent, pausing chat AI and suppressing auto-reply', { chatId: chat.id });
+            await supabaseAdmin.from('chats').update({ is_ai_paused: true }).eq('id', chat.id);
+            return;
+        }
+
+        // 8. Guardar respuesta del asistente
         await saveMessage(chat.id, user.id, 'assistant', responseText, { platform });
 
-        // 8. Enviar respuesta a Meta
+        // 9. Enviar respuesta a Meta
         if (platform === 'instagram') {
             await sendInstagramMessage(senderId, responseText);
         } else {
@@ -304,6 +497,10 @@ async function handleDirectMessage(event, isInstagramObject, storeId, entryId) {
             stack: err.stack,
             from: senderId
         });
+    } finally {
+        if (tempFiles.length > 0) {
+            await cleanupTempFiles(tempFiles);
+        }
     }
 }
 

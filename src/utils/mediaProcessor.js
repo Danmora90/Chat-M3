@@ -4,7 +4,12 @@ import ffprobePath from 'ffprobe-static';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import axios from 'axios';
+import { pipeline } from 'stream';
+import { promisify } from 'util';
 import { logger } from '../middleware/logger.js';
+
+const streamPipeline = promisify(pipeline);
 
 // Configurar ffmpeg con el path estático
 ffmpeg.setFfmpegPath(ffmpegPath);
@@ -103,5 +108,56 @@ export async function cleanupTempFiles(filePaths) {
                 console.error(`Error deleting temp file ${file}:`, err);
             }
         }
+    }
+}
+
+/**
+ * Descarga un archivo multimedia público (Meta CDN, etc.) a un archivo temporal local
+ * @param {string} mediaUrl - URL del archivo
+ * @param {string} localPath - Ruta local de destino
+ * @returns {Promise<string>} Ruta local del archivo descargado
+ */
+export async function downloadPublicMediaToFile(mediaUrl, localPath) {
+    try {
+        const response = await axios.get(mediaUrl, {
+            responseType: 'stream',
+            timeout: 60000,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            },
+            validateStatus: (status) => status >= 200 && status < 300
+        });
+
+        await streamPipeline(response.data, fs.createWriteStream(localPath));
+        return localPath;
+    } catch (error) {
+        logger.error('Error downloading public media to file:', { mediaUrl, error: error.message });
+        throw error;
+    }
+}
+
+/**
+ * Descarga un archivo multimedia público como Buffer con su Content-Type
+ * @param {string} mediaUrl - URL del archivo
+ * @returns {Promise<{buffer: Buffer, contentType: string}>}
+ */
+export async function downloadPublicMediaBuffer(mediaUrl) {
+    try {
+        const response = await axios.get(mediaUrl, {
+            responseType: 'arraybuffer',
+            timeout: 25000,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            },
+            validateStatus: (status) => status >= 200 && status < 300
+        });
+
+        return {
+            buffer: Buffer.from(response.data),
+            contentType: String(response.headers['content-type'] || 'application/octet-stream').split(';')[0].trim()
+        };
+    } catch (error) {
+        logger.error('Error downloading public media buffer:', { mediaUrl, error: error.message });
+        throw error;
     }
 }

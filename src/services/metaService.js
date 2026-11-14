@@ -8,6 +8,14 @@ let cachedResolvedToken = null;
 let lastResolvedAt = 0;
 
 /**
+ * Invalida la caché del token para forzar una nueva resolución
+ */
+export function invalidateTokenCache() {
+    cachedResolvedToken = null;
+    lastResolvedAt = 0;
+}
+
+/**
  * Obtiene el Page Access Token configurado.
  * 1. Si es un System User Token, obtiene el Page Access Token de MAS.3 vía /{pageId}?fields=access_token
  * 2. Si es un User Token estándar, lo busca vía /me/accounts
@@ -276,37 +284,59 @@ export async function sendMessengerMessage(recipientId, text) {
  * @returns {Promise<Object>} Respuesta de la Graph API
  */
 export async function sendInstagramMessage(recipientId, text) {
-    try {
-        const token = await getAccessToken();
-        const url = `${GRAPH_API_BASE}/me/messages`;
+    const token = await getAccessToken();
+    const pageId = (process.env.META_PAGE_ID || '163693413486965').trim();
 
-        const response = await axios.post(
-            url,
-            {
-                recipient: { id: recipientId },
-                message: { text }
-            },
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token}`
+    // Intentar primero con /me/messages y con /{pageId}/messages como respaldo
+    const endpoints = [
+        `${GRAPH_API_BASE}/me/messages`,
+        `${GRAPH_API_BASE}/${pageId}/messages`
+    ];
+
+    let lastError = null;
+
+    for (const url of endpoints) {
+        try {
+            const response = await axios.post(
+                url,
+                {
+                    recipient: { id: recipientId },
+                    message: { text }
+                },
+                {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${token}`
+                    },
+                    timeout: 10000
                 }
-            }
-        );
+            );
 
-        logger.info('Instagram DM sent successfully', {
-            recipientId,
-            messageId: response.data?.message_id
-        });
+            logger.info('Instagram DM sent successfully', {
+                recipientId,
+                endpoint: url,
+                messageId: response.data?.message_id
+            });
 
-        return response.data;
-    } catch (error) {
-        logger.error('Error sending Instagram DM', {
-            recipientId,
-            error: error.response?.data || error.message
-        });
-        throw error;
+            return response.data;
+        } catch (error) {
+            lastError = error;
+            logger.warn('Instagram DM attempt failed on endpoint', {
+                url,
+                error: error.response?.data || error.message
+            });
+        }
     }
+
+    if (lastError?.response?.data?.error?.code === 190) {
+        invalidateTokenCache();
+    }
+
+    logger.error('Error sending Instagram DM on all endpoints', {
+        recipientId,
+        error: lastError?.response?.data || lastError?.message
+    });
+    throw lastError;
 }
 
 /**

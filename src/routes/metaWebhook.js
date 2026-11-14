@@ -30,6 +30,14 @@ import { generateThreadId } from '../utils/session.js';
 const router = express.Router();
 
 /**
+ * Búfer en memoria para agrupar mensajes y adjuntos consecutivos de un mismo usuario (Debounce).
+ * Evita respuestas dobles o fragmentadas cuando un usuario envía texto y fotos con pocos segundos de diferencia.
+ */
+const metaDebounceMap = new Map();
+const META_DEBOUNCE_WAIT_MS = 4500; // 4.5 segundos de espera para agrupar
+const META_DEBOUNCE_MAX_WAIT_MS = 12000; // Máximo 12 segundos acumulados
+
+/**
  * Endpoint de diagnóstico en vivo para verificar conexión real con Meta
  */
 router.get('/debug-live', catchAsync(async (req, res) => {
@@ -371,32 +379,52 @@ async function handleDirectMessage(event, isInstagramObject, storeId, entryId) {
             }
         }
 
-        // Construir contentToProcess integrando texto, transcripción y contexto visual
-        let contentToProcess = messageText;
+        // Determinar el contenido limpio para visualización en el CRM (displayContent)
+        let displayContent = messageText;
 
-        // Si hubo nota de voz transcrita, la incorporamos directamente como mensaje del cliente
+        if (!displayContent) {
+            if (messageMetadata.image_analysis?.is_blueprint) {
+                displayContent = '[Plano arquitectónico]';
+            } else if (processedAttachments.some(a => a.type === 'image')) {
+                displayContent = '[Imagen]';
+            } else if (audioTranscriptionText) {
+                displayContent = `[Nota de voz: "${audioTranscriptionText}"]`;
+            } else if (processedAttachments.some(a => a.type === 'audio')) {
+                displayContent = '[Nota de voz]';
+            } else if (processedAttachments.some(a => a.type === 'video')) {
+                displayContent = '[Video]';
+            } else if (processedAttachments.some(a => a.type === 'file')) {
+                const docName = processedAttachments[0].title || 'Documento adjunto';
+                displayContent = `[Archivo: ${docName}]`;
+            } else if (message.story_share) {
+                displayContent = '[Interacción con historia de Instagram]';
+            } else if (processedAttachments.length > 0) {
+                displayContent = '[Archivo adjunto]';
+            } else {
+                displayContent = '[Mensaje recibido]';
+            }
+        }
+
+        // Construir promptContext integrando texto, transcripción y contexto visual enriquecido para la IA
+        let promptContext = messageText;
+
+        // Si hubo nota de voz transcrita, la incorporamos
         if (audioTranscriptionText) {
-            contentToProcess = contentToProcess
-                ? `${contentToProcess}\n\n${audioTranscriptionText}`
-                : audioTranscriptionText;
+            promptContext = promptContext
+                ? `${promptContext}\n\n[Nota de voz del usuario: "${audioTranscriptionText}"]`
+                : `[Nota de voz del usuario: "${audioTranscriptionText}"]`;
         }
 
         // Si hubo imágenes, videos o documentos, adjuntamos la información contextual
         if (attachmentsContext.length > 0) {
             const contextBlock = attachmentsContext.join('\n\n');
-            contentToProcess = contentToProcess
-                ? `${contentToProcess}\n\n${contextBlock}`
+            promptContext = promptContext
+                ? `${promptContext}\n\n${contextBlock}`
                 : contextBlock;
         }
 
-        // Si no hubo texto ni se pudo transcribir pero sí hubo adjuntos
-        if (!contentToProcess && rawAttachments.length > 0) {
-            contentToProcess = '[El usuario envió un archivo adjunto]';
-        }
-
-        if (!contentToProcess) {
-            logger.warn('No content to process for Meta DM', { senderId, messageMid });
-            return;
+        if (!promptContext) {
+            promptContext = displayContent;
         }
 
         // Enlazar metadatos de adjuntos para visualización en el CRM
@@ -411,15 +439,15 @@ async function handleDirectMessage(event, isInstagramObject, storeId, entryId) {
             mid: messageMid,
             hasAttachments: processedAttachments.length > 0,
             attachmentTypes: processedAttachments.map(a => a.type),
-            length: contentToProcess.length
+            length: promptContext.length
         });
 
-        // 5. Guardar mensaje del usuario
+        // 5. Guardar mensaje del usuario de inmediato con displayContent limpio para el CRM
         await saveMessage(
             chat.id,
             user.id,
             'user',
-            contentToProcess,
+            displayContent,
             messageMetadata,
             messageMid || null
         );
@@ -435,7 +463,7 @@ async function handleDirectMessage(event, isInstagramObject, storeId, entryId) {
                 chat.id,
                 {
                     role: 'user',
-                    content: contentToProcess
+                    content: promptContext
                 },
                 {
                     userId: user.id
@@ -445,51 +473,14 @@ async function handleDirectMessage(event, isInstagramObject, storeId, entryId) {
             return;
         }
 
-        // 7. Invocar al agente IA
-        const agent = await getAgent();
-        const threadId = generateThreadId(chat.id);
-        const config = {
-            configurable: {
-                thread_id: threadId
-            }
-        };
-
-        const result = await agent.invoke(
-            {
-                messages: [{ role: 'user', content: contentToProcess }],
-                userPhone: `${platform}:${senderId}`,
-                chatId: chat.id,
-                userId: user.id
-            },
-            config
-        );
-
-        const lastMessage = result.messages[result.messages.length - 1];
-        const responseText = lastMessage?.content || '';
-
-        // Si el agente produjo un texto vacío o se activó la directiva interna de silencio
-        if (!responseText || responseText.trim().length === 0) {
-            logger.warn('Agent produced empty response for Meta DM', { chatId: chat.id });
-            return;
-        }
-
-        if (responseText.toLowerCase().includes('silencio y atención humana') || responseText.toLowerCase().includes('silencio y atencion humana')) {
-            logger.info('Silence / Human attention triggered by agent, pausing chat AI and suppressing auto-reply', { chatId: chat.id });
-            await supabaseAdmin.from('chats').update({ is_ai_paused: true }).eq('id', chat.id);
-            return;
-        }
-
-        // 8. Guardar respuesta del asistente
-        await saveMessage(chat.id, user.id, 'assistant', responseText, { platform });
-
-        // 9. Enviar respuesta a Meta
-        if (platform === 'instagram') {
-            await sendInstagramMessage(senderId, responseText);
-        } else {
-            await sendMessengerMessage(senderId, responseText);
-        }
-
-        logger.info(`${platform} message responded successfully`, { to: senderId });
+        // 7. Encolar en el búfer de debounce para responder con una sola llamada consolidada
+        queueMetaMessageForAi({
+            chatId: chat.id,
+            userId: user.id,
+            senderId,
+            platform,
+            promptContext
+        });
 
     } catch (err) {
         logger.error(`Error processing ${platform} message`, {
@@ -501,6 +492,184 @@ async function handleDirectMessage(event, isInstagramObject, storeId, entryId) {
         if (tempFiles.length > 0) {
             await cleanupTempFiles(tempFiles);
         }
+    }
+}
+
+/**
+ * Encola un mensaje o adjunto en el búfer de debounce para evitar respuestas dobles
+ */
+function queueMetaMessageForAi({ chatId, userId, senderId, platform, promptContext }) {
+    let existing = metaDebounceMap.get(chatId);
+
+    if (existing) {
+        clearTimeout(existing.timer);
+        existing.contexts.push(promptContext);
+
+        const elapsed = Date.now() - existing.firstReceivedAt;
+        const remainingUntilMax = Math.max(1000, META_DEBOUNCE_MAX_WAIT_MS - elapsed);
+        const delay = Math.min(META_DEBOUNCE_WAIT_MS, remainingUntilMax);
+
+        logger.info('Debounce: Appending consecutive Meta message to pending buffer', {
+            chatId,
+            bufferedCount: existing.contexts.length,
+            nextExecutionInMs: delay
+        });
+
+        existing.timer = setTimeout(() => {
+            executeBufferedMetaResponse(chatId).catch(err => {
+                logger.error('Error executing buffered Meta response', {
+                    chatId,
+                    error: err.message,
+                    stack: err.stack
+                });
+            });
+        }, delay);
+    } else {
+        logger.info('Debounce: Starting buffer window for Meta user', {
+            chatId,
+            senderId,
+            delayMs: META_DEBOUNCE_WAIT_MS
+        });
+
+        const entry = {
+            chatId,
+            userId,
+            senderId,
+            platform,
+            firstReceivedAt: Date.now(),
+            contexts: [promptContext],
+            timer: null
+        };
+
+        entry.timer = setTimeout(() => {
+            executeBufferedMetaResponse(chatId).catch(err => {
+                logger.error('Error executing buffered Meta response', {
+                    chatId,
+                    error: err.message,
+                    stack: err.stack
+                });
+            });
+        }, META_DEBOUNCE_WAIT_MS);
+
+        metaDebounceMap.set(chatId, entry);
+    }
+}
+
+/**
+ * Procesa los mensajes acumulados en el búfer de debounce, invocando a la IA una sola vez
+ * y despachando la respuesta oficial a Meta con confirmación de entrega y trazabilidad en BD.
+ */
+async function executeBufferedMetaResponse(chatId) {
+    const buffer = metaDebounceMap.get(chatId);
+    if (!buffer) return;
+    metaDebounceMap.delete(chatId);
+
+    const { userId, senderId, platform, contexts } = buffer;
+    if (!contexts || contexts.length === 0) return;
+
+    try {
+        // 1. Re-verificar si en la ventana de espera un asesor humano intervino o pausó el chat
+        const { data: latestChat, error: chatErr } = await supabaseAdmin
+            .from('chats')
+            .select('is_ai_paused')
+            .eq('id', chatId)
+            .single();
+
+        if (chatErr) {
+            logger.warn('Could not fetch latest chat status before executing AI response', { chatId, error: chatErr.message });
+        }
+
+        if (latestChat?.is_ai_paused) {
+            logger.info('Chat was paused by human during debounce window. Suppressing automated AI response.', { chatId });
+            return;
+        }
+
+        // 2. Unificar los contextos acumulados en un solo turno para el agente
+        const combinedPrompt = contexts.length === 1
+            ? contexts[0]
+            : contexts.join('\n\n');
+
+        logger.info('Invoking AI agent with buffered Meta context', {
+            chatId,
+            senderId,
+            messageCount: contexts.length,
+            promptLength: combinedPrompt.length
+        });
+
+        // 3. Invocar al agente IA
+        const agent = await getAgent();
+        const threadId = generateThreadId(chatId);
+        const config = {
+            configurable: {
+                thread_id: threadId
+            }
+        };
+
+        const result = await agent.invoke(
+            {
+                messages: [{ role: 'user', content: combinedPrompt }],
+                userPhone: `${platform}:${senderId}`,
+                chatId,
+                userId
+            },
+            config
+        );
+
+        const lastMessage = result.messages[result.messages.length - 1];
+        const responseText = lastMessage?.content || '';
+
+        // Si el agente produjo un texto vacío o se activó la directiva interna de silencio
+        if (!responseText || responseText.trim().length === 0) {
+            logger.warn('Agent produced empty response for buffered Meta DM', { chatId });
+            return;
+        }
+
+        if (responseText.toLowerCase().includes('silencio y atención humana') || responseText.toLowerCase().includes('silencio y atencion humana')) {
+            logger.info('Silence / Human attention triggered by agent, pausing chat AI and suppressing auto-reply', { chatId });
+            await supabaseAdmin.from('chats').update({ is_ai_paused: true }).eq('id', chatId);
+            return;
+        }
+
+        // 4. Intentar enviar mensaje a Meta Graph API
+        let metaSendResult = null;
+        let deliveryStatus = 'delivered';
+        let deliveryError = null;
+
+        try {
+            if (platform === 'instagram') {
+                metaSendResult = await sendInstagramMessage(senderId, responseText);
+            } else {
+                metaSendResult = await sendMessengerMessage(senderId, responseText);
+            }
+            logger.info(`${platform} message delivered successfully to Meta`, {
+                to: senderId,
+                messageId: metaSendResult?.message_id
+            });
+        } catch (apiError) {
+            deliveryStatus = 'failed';
+            deliveryError = apiError.response?.data?.error?.message || apiError.message;
+            logger.error(`Error sending message to Meta API on ${platform}`, {
+                to: senderId,
+                error: deliveryError,
+                details: apiError.response?.data
+            });
+        }
+
+        // 5. Guardar la respuesta del asistente en Supabase SIEMPRE con el estado de entrega real
+        await saveMessage(chatId, userId, 'assistant', responseText, {
+            platform,
+            delivery_status: deliveryStatus,
+            delivery_error: deliveryError,
+            meta_mid: metaSendResult?.message_id || null
+        });
+
+    } catch (error) {
+        logger.error('Critical error in executeBufferedMetaResponse', {
+            chatId,
+            senderId,
+            error: error.message,
+            stack: error.stack
+        });
     }
 }
 

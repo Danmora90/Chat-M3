@@ -19,7 +19,8 @@ import {
     replyFacebookComment,
     fetchCommentDetails,
     fetchPostMediaDetails,
-    getAccessToken 
+    getAccessToken,
+    ensureInstagramSubscriptions
 } from '../services/metaService.js';
 import { getVideoContext } from '../services/videoContextService.js';
 import { analyzeImage, analyzeVideoFrames } from '../services/visionService.js';
@@ -102,6 +103,13 @@ router.get('/debug-live', catchAsync(async (req, res) => {
         } catch (e) {
             results.reply_post_error = e.response?.data || e.message;
         }
+    }
+
+    // 5. Verificar y asegurar suscripciones a Webhooks
+    try {
+        results.subscriptions = await ensureInstagramSubscriptions();
+    } catch (subErr) {
+        results.subscriptions_error = subErr.message;
     }
 
     res.json(results);
@@ -682,43 +690,56 @@ async function handleChangeEvent(change, isInstagramObject, storeId, entryId) {
 
     if (!value) return;
 
-    // --- CASO 1: Comentarios de Instagram (Reels / Posts) ---
+    // --- CASO 1: Comentarios de Instagram (Reels / Posts / Carruseles) ---
     if (field === 'comments') {
         const commentId = value.id;
         let text = value.text || value.message || '';
-        const fromUser = value.from;
+        let fromUser = value.from;
         let mediaId = value.media?.id || null;
 
+        // Si el webhook de Instagram no trajo el texto del mensaje, mediaId o el remitente,
+        // consultamos los detalles directamente a la Graph API antes de llamar a la IA
+        if (!text || text.trim() === '' || !mediaId || !fromUser) {
+            logger.info('Instagram webhook missing comment text, mediaId or fromUser, fetching via Graph API...', {
+                commentId,
+                hasText: !!text,
+                hasMediaId: !!mediaId,
+                hasFrom: !!fromUser
+            });
+            const details = await fetchCommentDetails(commentId, 'instagram');
+            if (details) {
+                if (!text || text.trim() === '') text = details.text;
+                if (!mediaId) mediaId = details.mediaId;
+                if (!fromUser && details.from) fromUser = details.from;
+                if (!fromUser && details.raw?.username) {
+                    fromUser = {
+                        id: details.raw.from?.id || details.raw.id || commentId,
+                        username: details.raw.username
+                    };
+                }
+            }
+        }
+
         // Evitar responder comentarios de la propia página/cuenta
-        if (!fromUser || fromUser.id === entryId || fromUser.username?.toLowerCase() === 'mas.3arquitectura') {
+        if (fromUser && (fromUser.id === entryId || fromUser.username?.toLowerCase() === 'mas.3arquitectura')) {
             return;
         }
 
-        // Si el webhook de Instagram no trajo el texto del mensaje o el mediaId,
-        // consultamos los detalles directamente a la Graph API antes de llamar a la IA
-        if (!text || text.trim() === '' || !mediaId) {
-            logger.info('Instagram webhook missing comment text or mediaId, fetching via Graph API...', { commentId, hasText: !!text, hasMediaId: !!mediaId });
-            const details = await fetchCommentDetails(commentId, 'instagram');
-            if (details?.text && (!text || text.trim() === '')) {
-                text = details.text;
-            }
-            if (details?.mediaId && !mediaId) {
-                mediaId = details.mediaId;
-            }
-        }
+        const authorId = fromUser?.id || (fromUser?.username ? `ig_${fromUser.username}` : `ig_comment_${commentId}`);
+        const authorName = fromUser?.username || 'cliente';
 
         logger.info('Received Instagram comment', {
             commentId,
             mediaId,
-            from: fromUser.username,
+            from: authorName,
             text
         });
 
         await processCommentReply({
             commentId,
             mediaId,
-            authorId: fromUser.id,
-            authorName: fromUser.username,
+            authorId,
+            authorName,
             commentText: text,
             platform: 'instagram',
             storeId
@@ -977,5 +998,12 @@ async function processCommentReply({ commentId, mediaId, authorId, authorName, c
         });
     }
 }
+
+// Asegurar suscripción de webhooks de Instagram y Page de forma asíncrona al iniciar
+ensureInstagramSubscriptions().then(status => {
+    logger.info('Meta webhooks subscription check completed', status);
+}).catch(err => {
+    logger.warn('Meta webhooks auto-subscription check deferred or failed', { error: err.message });
+});
 
 export default router;

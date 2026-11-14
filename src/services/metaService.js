@@ -373,6 +373,9 @@ export async function replyInstagramComment(commentId, text) {
             commentId,
             error: error.response?.data || error.message
         });
+        if (error.response?.data?.error?.code === 190) {
+            invalidateTokenCache();
+        }
         throw error;
     }
 }
@@ -411,6 +414,90 @@ export async function replyFacebookComment(commentId, text) {
             commentId,
             error: error.response?.data || error.message
         });
+        if (error.response?.data?.error?.code === 190) {
+            invalidateTokenCache();
+        }
         throw error;
     }
 }
+
+/**
+ * Asegura que la cuenta de Instagram y la página de Facebook estén suscritas a Webhooks
+ * para recibir eventos de mensajes directos, comentarios y menciones.
+ * @returns {Promise<Object>} Estado de las suscripciones
+ */
+export async function ensureInstagramSubscriptions() {
+    const results = {
+        page_id: null,
+        instagram_id: null,
+        page_subscribed: false,
+        instagram_subscribed: false,
+        error: null
+    };
+
+    try {
+        const token = await getAccessToken();
+        const pageId = (process.env.META_PAGE_ID || '163693413486965').trim();
+        results.page_id = pageId;
+
+        // 1. Obtener el Instagram Business Account ID vinculado a la página
+        let igId = null;
+        try {
+            const pageRes = await axios.get(`${GRAPH_API_BASE}/${pageId}`, {
+                params: {
+                    fields: 'instagram_business_account,connected_instagram_account',
+                    access_token: token
+                },
+                timeout: 7000
+            });
+            igId = pageRes.data?.instagram_business_account?.id || pageRes.data?.connected_instagram_account?.id || null;
+            results.instagram_id = igId;
+        } catch (pageErr) {
+            logger.warn('Could not fetch linked Instagram account from Page', {
+                error: pageErr.response?.data?.error?.message || pageErr.message
+            });
+        }
+
+        // 2. Suscribir la página a 'feed' y 'messages'
+        try {
+            const pageSubRes = await axios.post(`${GRAPH_API_BASE}/${pageId}/subscribed_apps`, null, {
+                params: {
+                    subscribed_fields: 'feed,messages',
+                    access_token: token
+                },
+                timeout: 7000
+            });
+            results.page_subscribed = pageSubRes.data?.success || true;
+            logger.info('Page webhooks subscribed successfully', { pageId });
+        } catch (pSubErr) {
+            results.page_error = pSubErr.response?.data?.error?.message || pSubErr.message;
+            logger.warn('Failed subscribing Page to webhooks', { error: results.page_error });
+        }
+
+        // 3. Suscribir la cuenta de Instagram a 'comments', 'mentions' y 'messages'
+        if (igId) {
+            try {
+                const igSubRes = await axios.post(`${GRAPH_API_BASE}/${igId}/subscribed_apps`, null, {
+                    params: {
+                        subscribed_fields: 'comments,mentions,messages',
+                        access_token: token
+                    },
+                    timeout: 7000
+                });
+                results.instagram_subscribed = igSubRes.data?.success || true;
+                logger.info('Instagram webhooks subscribed successfully', { igId });
+            } catch (igSubErr) {
+                results.instagram_error = igSubErr.response?.data?.error?.message || igSubErr.message;
+                logger.warn('Failed subscribing Instagram to webhooks (requires instagram_manage_comments)', {
+                    error: results.instagram_error
+                });
+            }
+        }
+
+        return results;
+    } catch (err) {
+        results.error = err.message;
+        return results;
+    }
+}
+
